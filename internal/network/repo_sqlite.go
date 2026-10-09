@@ -22,7 +22,9 @@ type sqliteRepo struct {
 }
 
 func openSQLite(ctx context.Context, path string) (*sqliteRepo, error) {
-	db, err := sql.Open("sqlite", path)
+	// Pragmas live on the DSN so a replaced connection keeps the busy timeout.
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -33,21 +35,18 @@ func openSQLite(ctx context.Context, path string) (*sqliteRepo, error) {
 		return nil, err
 	}
 	defer r.unlock()
-	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if version == 0 {
-		if _, err := db.ExecContext(ctx, `
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   version INTEGER NOT NULL,
@@ -75,10 +74,16 @@ CREATE TABLE addresses (
   project TEXT NOT NULL
 );
 `); err != nil {
+			_ = tx.Rollback()
 			_ = db.Close()
 			return nil, err
 		}
-		if _, err := db.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -193,6 +198,15 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if c.settle != nil {
+		terminal, err := settleAllowed(ctx, tx, *c.settle)
+		if err != nil {
+			return err
+		}
+		if terminal {
+			return nil
+		}
+	}
 	if c.state != nil {
 		if err := writeState(ctx, tx, c); err != nil {
 			return err
@@ -209,6 +223,22 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// settleAllowed reports whether the claim may write. A token mismatch is
+// errLostClaim. A job that is already terminal is a no-op and must not write state.
+func settleAllowed(ctx context.Context, tx *sql.Tx, j job) (bool, error) {
+	var state int
+	var token string
+	err := tx.QueryRowContext(ctx, `SELECT state, token FROM operations WHERE id = ?`, j.op.ID).Scan(&state, &token)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && token != j.token) {
+		return false, errLostClaim
+	}
+	if err != nil {
+		return false, err
+	}
+	done := domain.OpState(state) == domain.OpSucceeded || domain.OpState(state) == domain.OpFailed
+	return done, nil
 }
 
 func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
