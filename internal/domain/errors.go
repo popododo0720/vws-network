@@ -16,6 +16,8 @@ const (
 	Exhausted
 	// Dataplane means the dataplane retries are exhausted.
 	Dataplane
+	// Busy means a concurrent writer won and the caller should retry.
+	Busy
 )
 
 // Error is the only error the service returns for a rejected call.

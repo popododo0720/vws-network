@@ -2,6 +2,7 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -20,11 +21,19 @@ import (
 )
 
 func TestAllErrKindsMapped(t *testing.T) {
-	for k := domain.Invalid; k <= domain.Dataplane; k++ {
+	for k := domain.Invalid; k <= domain.Busy; k++ {
 		code := status.Code(toStatus(&domain.Error{Kind: k, Msg: "x"}))
 		if code == codes.OK || code == codes.Unknown || code == codes.Internal {
 			t.Fatalf("kind %d mapped to %s", k, code)
 		}
+	}
+}
+
+func TestUnknownErrorHidesDetail(t *testing.T) {
+	err := toStatus(errors.New("sqlite: secret schema"))
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal || st.Message() != "internal error" {
+		t.Fatalf("status = %v", err)
 	}
 }
 

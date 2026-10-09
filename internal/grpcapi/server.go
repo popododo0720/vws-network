@@ -399,7 +399,7 @@ func toStatus(err error) error {
 	}
 	var de *domain.Error
 	if !errors.As(err, &de) {
-		return status.Error(codes.Internal, err.Error())
+		return status.Error(codes.Internal, "internal error")
 	}
 	return status.Error(codeOf(de.Kind), de.Msg)
 }
@@ -418,6 +418,8 @@ func codeOf(k domain.ErrKind) codes.Code {
 		return codes.ResourceExhausted
 	case domain.Dataplane:
 		return codes.Unavailable
+	case domain.Busy:
+		return codes.Aborted
 	default:
 		return codes.Internal
 	}

@@ -459,6 +459,92 @@ func TestStepReleasesClaimWhenLoadFails(t *testing.T) {
 	}
 }
 
+func TestRetryVPCDeleteDoesNotCreateGhostGroup(t *testing.T) {
+	svc, _ := openTest(t, newMemRepo())
+	ctx := context.Background()
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.22.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := svc.GetVPC(ctx, "proj", domain.VPCID(op.Resource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.Rule{Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 443, ToPort: 443, Peer: domain.Peer{CIDR: mustP("192.0.2.0/24")}}
+	if _, err := svc.AuthorizeRules(ctx, call("proj", "auth"), domain.AuthorizeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeleteVPC(ctx, call("proj", "del"), domain.DeleteVPC{VPC: vpc.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetSecurityGroup(ctx, "proj", vpc.DefaultGroup); kind(err) != domain.NotFound {
+		t.Fatalf("default group err = %v", err)
+	}
+	if _, err := svc.DeleteVPC(ctx, call("proj", "del-2"), domain.DeleteVPC{VPC: vpc.ID}); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := svc.ListSecurityGroups(ctx, "proj", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g.ID == "" {
+			t.Fatal("second delete stored an empty security group")
+		}
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", vpc.ID); kind(err) != domain.NotFound {
+		t.Fatalf("vpc err = %v", err)
+	}
+}
+
+func TestMutateExhaustionIsDomainError(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		err  error
+		kind domain.ErrKind
+	}{
+		{name: "stale", err: errStale, kind: domain.Busy},
+		{name: "address", err: errAddressTaken, kind: domain.Conflict},
+		{name: "key", err: errKeyTaken, kind: domain.Busy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &failCommit{repository: newMemRepo(), err: tc.err}
+			svc, err := newService(ctx, repo, newFake(), mustP("198.51.100.0/24"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.23.0.0/16")})
+			var de *domain.Error
+			if !errors.As(err, &de) || de.Kind != tc.kind || errors.Is(err, tc.err) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+type failCommit struct {
+	repository
+	err error
+}
+
+func (f *failCommit) commit(ctx context.Context, c commit) error {
+	if c.enqueue != nil {
+		return f.err
+	}
+	return f.repository.commit(ctx, c)
+}
+
 func TestFakeNilFailureIsNotLostClaim(t *testing.T) {
 	fake := newFake()
 	fake.failNext(1, nil)

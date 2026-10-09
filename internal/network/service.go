@@ -470,10 +470,34 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 		}
 		return op, nil
 	}
-	if last == nil {
-		last = errStale
+	return s.commitFailure(ctx, c, fp, last)
+}
+
+// commitFailure turns a store race into a domain error. The sentinels stay
+// inside this package so a client never sees them.
+func (s *Service) commitFailure(ctx context.Context, c domain.Call, fp [32]byte, err error) (domain.Operation, error) {
+	if errors.Is(err, errKeyTaken) {
+		existing, ok, keyErr := s.repo.key(ctx, c.Project, c.Key)
+		if keyErr != nil {
+			return domain.Operation{}, keyErr
+		}
+		if ok && existing.fingerprint == fp {
+			return existing.op, nil
+		}
+		if ok {
+			return domain.Operation{}, &domain.Error{Kind: domain.Conflict, Msg: "idempotency key reused with a different request"}
+		}
 	}
-	return domain.Operation{}, last
+	if errors.Is(err, errAddressTaken) {
+		return domain.Operation{}, &domain.Error{Kind: domain.Conflict, Msg: "pool address is taken"}
+	}
+	if errors.Is(err, errStale) || errors.Is(err, errKeyTaken) {
+		return domain.Operation{}, &domain.Error{Kind: domain.Busy, Msg: "project changed concurrently"}
+	}
+	if err == nil {
+		err = errStale
+	}
+	return domain.Operation{}, err
 }
 
 func (s *Service) nudge() {
