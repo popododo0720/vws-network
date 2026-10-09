@@ -350,9 +350,12 @@ func (s *State) DeleteVPC(r DeleteVPC) (bool, error) {
 	}
 	v.Status = StatusDeleting
 	s.VPCs[v.ID] = v
-	g := s.Groups[v.DefaultGroup]
-	g.Status = StatusDeleting
-	s.Groups[g.ID] = g
+	// The default group may already have been removed by an earlier job.
+	// A missing map entry is the zero group, and storing it would insert "".
+	if g, ok := s.Groups[v.DefaultGroup]; ok && g.ID != "" {
+		g.Status = StatusDeleting
+		s.Groups[g.ID] = g
+	}
 	return true, nil
 }
 
@@ -538,14 +541,21 @@ func usable(st Status) error {
 }
 
 func (s State) planVPC(v VPC) ([]Action, bool, error) {
-	g := s.Groups[v.DefaultGroup]
+	g, hasGroup := s.Groups[v.DefaultGroup]
+	hasGroup = hasGroup && g.ID != ""
 	if v.Status == StatusFailed {
 		return nil, true, precondition("vpc is failed")
 	}
 	if v.Status == StatusDeleting {
-		actions := deleteRules(g, append(copyRules(g.Rules), g.revoking...))
-		actions = append(actions, Action{Kind: ActDeleteGroup, Group: g.public()}, Action{Kind: ActDeleteVPC, VPC: v})
-		return actions, true, nil
+		var actions []Action
+		if hasGroup {
+			actions = deleteRules(g, append(copyRules(g.Rules), g.revoking...))
+			actions = append(actions, Action{Kind: ActDeleteGroup, Group: g.public()})
+		}
+		return append(actions, Action{Kind: ActDeleteVPC, VPC: v}), true, nil
+	}
+	if !hasGroup {
+		return nil, true, precondition("default security group is missing")
 	}
 	actions := []Action{{Kind: ActEnsureVPC, VPC: v}, {Kind: ActEnsureGroup, Group: g.public()}}
 	actions = append(actions, s.ensureRules(g)...)

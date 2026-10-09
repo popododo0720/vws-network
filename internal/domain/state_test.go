@@ -120,6 +120,34 @@ func TestSecurityGroupRules(t *testing.T) {
 	}
 }
 
+func TestDeleteVPCWithoutDefaultGroup(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteVPC(DeleteVPC{VPC: "vpc-1"}); err != nil {
+		t.Fatal(err)
+	}
+	observed := s.Clone()
+	s.Settle("sg-1", observed)
+	if _, ok := s.Groups["sg-1"]; ok {
+		t.Fatal("settled default group remained")
+	}
+	if _, err := s.DeleteVPC(DeleteVPC{VPC: "vpc-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Groups[""]; ok {
+		t.Fatal("second delete stored an empty security group")
+	}
+	if s.VPCs["vpc-1"].Status != StatusDeleting {
+		t.Fatal("vpc is not deleting")
+	}
+	actions, found, err := s.Plan("vpc-1")
+	if err != nil || !found || len(actions) != 1 || actions[0].Kind != ActDeleteVPC {
+		t.Fatalf("plan %+v found %v err %v", actions, found, err)
+	}
+}
+
 func TestPlanRevokeAndSettleClearsMark(t *testing.T) {
 	var s State
 	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
