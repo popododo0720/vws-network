@@ -509,7 +509,7 @@ func (s *Service) loop(ctx context.Context) {
 		if err != nil && s.logf != nil {
 			s.logf("network: step: %v", err)
 		}
-		if ok {
+		if ok && err == nil {
 			continue
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
@@ -529,19 +529,35 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 	if err != nil || !ok {
 		return false, err
 	}
+	// A claim that neither settles nor schedules a retry must not stay running.
+	// The next claim in this process would otherwise see the lane as blocked.
+	settled := false
+	defer func() {
+		if settled {
+			return
+		}
+		rel := j
+		rel.op.State = domain.OpPending
+		rel.op.Err = nil
+		_ = s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel})
+	}()
 	st, _, err := s.repo.load(ctx, j.op.Project)
 	if err != nil {
-		return true, err
+		return false, err
 	}
 	observed := st.Clone()
 	if err := s.converge(ctx, observed, j.op.Resource); err != nil {
-		return true, s.failOrRetry(ctx, j, err)
+		if err := s.failOrRetry(ctx, j, err); err != nil {
+			return false, err
+		}
+		settled = true
+		return true, nil
 	}
 	var last error
 	for i := 0; i < 8; i++ {
 		cur, ver, err := s.repo.load(ctx, j.op.Project)
 		if err != nil {
-			return true, err
+			return false, err
 		}
 		cur.Settle(j.op.Resource, observed)
 		done := j
@@ -549,14 +565,15 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		done.op.Err = nil
 		err = s.repo.commit(ctx, commit{project: j.op.Project, base: ver, state: &cur, settle: &done})
 		if err == nil {
+			settled = true
 			return true, nil
 		}
 		if !errors.Is(err, errStale) {
-			return true, err
+			return false, err
 		}
 		last = err
 	}
-	return true, last
+	return false, last
 }
 
 func (s *Service) failOrRetry(ctx context.Context, j job, cause error) error {

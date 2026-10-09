@@ -34,6 +34,9 @@ func TestServiceAgainstStores(t *testing.T) {
 			t.Run("converge and delete", func(t *testing.T) { testConvergeAndDelete(t, opener.open(t)) })
 			t.Run("elastic ip", func(t *testing.T) { testElasticIP(t, opener.open(t)) })
 			t.Run("dataplane retry", func(t *testing.T) { testDataplaneRetry(t, opener.open(t)) })
+			t.Run("revoke retries after failure", func(t *testing.T) { testRevokeRetriesAfterFailure(t, opener.open(t)) })
+			t.Run("delete children of failed vpc", func(t *testing.T) { testDeleteChildrenOfFailedVPC(t, opener.open(t)) })
+			t.Run("cross vpc peer", func(t *testing.T) { testCrossVPCPeerIsNotFound(t, opener.open(t)) })
 		})
 	}
 }
@@ -238,6 +241,253 @@ func testDataplaneRetry(t *testing.T, repo repository) {
 	if err != nil || op.State != domain.OpSucceeded {
 		t.Fatalf("after retry %+v err %v", op, err)
 	}
+}
+
+func testRevokeRetriesAfterFailure(t *testing.T, repo repository) {
+	t.Helper()
+	svc, fake := openTest(t, repo)
+	svc.maxAttempts = 1
+	ctx := context.Background()
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.14.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := svc.GetVPC(ctx, "proj", domain.VPCID(op.Resource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.Rule{Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 22, ToPort: 22, Peer: domain.Peer{CIDR: mustP("0.0.0.0/0")}}
+	if _, err := svc.AuthorizeRules(ctx, call("proj", "auth"), domain.AuthorizeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	key := "rule/" + string(vpc.DefaultGroup) + "/" + rule.Identity()
+	if !fake.has(key) {
+		t.Fatal("authorize did not install the rule")
+	}
+	fake.failNext(1, errors.New("boom"))
+	rev, err := svc.RevokeRules(ctx, call("proj", "revoke"), domain.RevokeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rev, err = svc.GetOperation(ctx, "proj", rev.ID)
+	if err != nil || rev.State != domain.OpFailed {
+		t.Fatalf("revoke %+v err %v", rev, err)
+	}
+	group, err := svc.GetSecurityGroup(ctx, "proj", vpc.DefaultGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range group.Rules {
+		if got == rule {
+			t.Fatal("revoked rule is still visible")
+		}
+	}
+	if !fake.has(key) {
+		t.Fatal("failed revoke removed the dataplane rule")
+	}
+	if _, err := svc.RevokeRules(ctx, call("proj", "revoke-2"), domain.RevokeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if fake.has(key) {
+		t.Fatal("retry left the dataplane rule")
+	}
+}
+
+func testDeleteChildrenOfFailedVPC(t *testing.T, repo repository) {
+	t.Helper()
+	svc, fake := openTest(t, repo)
+	svc.maxAttempts = 1
+	fake.failNext(1, errors.New("boom"))
+	ctx := context.Background()
+	vpcOp, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.12.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpcID := domain.VPCID(vpcOp.Resource)
+	subOp, err := svc.CreateSubnet(ctx, call("proj", "sub"), domain.CreateSubnet{VPC: vpcID, CIDR: mustP("10.12.1.0/24"), Zone: "az1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eipOp, err := svc.AllocateElasticIP(ctx, call("proj", "eip"), domain.AllocateElasticIP{VPC: vpcID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := svc.GetElasticIP(ctx, "proj", domain.ElasticIPID(eipOp.Resource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	vpcOp, err = svc.GetOperation(ctx, "proj", vpcOp.ID)
+	if err != nil || vpcOp.State != domain.OpFailed {
+		t.Fatalf("vpc op %+v err %v", vpcOp, err)
+	}
+	if _, err := svc.DeleteSubnet(ctx, call("proj", "del-sub"), domain.DeleteSubnet{Subnet: domain.SubnetID(subOp.Resource)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ReleaseElasticIP(ctx, call("proj", "rel"), domain.ReleaseElasticIP{ElasticIP: domain.ElasticIPID(eipOp.Resource)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetSubnet(ctx, "proj", domain.SubnetID(subOp.Resource)); kind(err) != domain.NotFound {
+		t.Fatalf("subnet err = %v", err)
+	}
+	if _, err := svc.GetElasticIP(ctx, "proj", domain.ElasticIPID(eipOp.Resource)); kind(err) != domain.NotFound {
+		t.Fatalf("eip err = %v", err)
+	}
+	other, err := svc.CreateVPC(ctx, call("other", "vpc"), domain.CreateVPC{CIDR: mustP("10.13.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := svc.AllocateElasticIP(ctx, call("other", "eip"), domain.AllocateElasticIP{VPC: domain.VPCID(other.Resource)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetElasticIP(ctx, "other", domain.ElasticIPID(again.Resource))
+	if err != nil || got.Address != held.Address {
+		t.Fatalf("reused %+v want %v err %v", got, held.Address, err)
+	}
+	if _, err := svc.DeleteVPC(ctx, call("proj", "del-vpc"), domain.DeleteVPC{VPC: vpcID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", vpcID); kind(err) != domain.NotFound {
+		t.Fatalf("deleted vpc err = %v", err)
+	}
+}
+
+func testCrossVPCPeerIsNotFound(t *testing.T, repo repository) {
+	t.Helper()
+	svc, _ := openTest(t, repo)
+	ctx := context.Background()
+	a, err := svc.CreateVPC(ctx, call("proj", "a"), domain.CreateVPC{CIDR: mustP("10.30.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := svc.CreateVPC(ctx, call("proj", "b"), domain.CreateVPC{CIDR: mustP("10.31.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := svc.CreateSecurityGroup(ctx, call("proj", "peer"), domain.CreateSecurityGroup{VPC: domain.VPCID(b.Resource), Name: "peer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := svc.GetVPC(ctx, "proj", domain.VPCID(a.Resource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.Rule{Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 22, ToPort: 22, Peer: domain.Peer{Group: domain.SecurityGroupID(peer.Resource)}}
+	_, err = svc.AuthorizeRules(ctx, call("proj", "auth"), domain.AuthorizeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}})
+	if kind(err) != domain.NotFound {
+		t.Fatalf("cross vpc peer = %v", err)
+	}
+}
+
+func TestPeerGroupEnsuredBeforeRule(t *testing.T) {
+	svc, fake := openTest(t, newMemRepo())
+	ctx := context.Background()
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.20.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := svc.CreateSecurityGroup(ctx, call("proj", "peer"), domain.CreateSecurityGroup{VPC: domain.VPCID(op.Resource), Name: "peer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := svc.GetVPC(ctx, "proj", domain.VPCID(op.Resource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.Rule{Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 80, ToPort: 80, Peer: domain.Peer{Group: domain.SecurityGroupID(peer.Resource)}}
+	if _, err := svc.AuthorizeRules(ctx, call("proj", "auth"), domain.AuthorizeRules{Group: vpc.DefaultGroup, Rules: []domain.Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := svc.step(ctx)
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	peerAt := logIndex(fake.log(), "ensure-sg/"+peer.Resource)
+	ruleAt := logIndex(fake.log(), "ensure-rule/"+string(vpc.DefaultGroup)+"/"+rule.Identity())
+	if peerAt < 0 || ruleAt < 0 || peerAt > ruleAt {
+		t.Fatalf("peer %d rule %d log %v", peerAt, ruleAt, fake.log())
+	}
+}
+
+func TestStepReleasesClaimWhenLoadFails(t *testing.T) {
+	ctx := context.Background()
+	repo := newMemRepo()
+	svc, err := newService(ctx, repo, newFake(), mustP("198.51.100.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.21.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.repo = &failLoad{repository: repo, n: 1}
+	ok, err := svc.step(ctx)
+	if err == nil || ok {
+		t.Fatalf("step ok %v err %v", ok, err)
+	}
+	op, err = svc.GetOperation(ctx, "proj", op.ID)
+	if err != nil || op.State != domain.OpPending {
+		t.Fatalf("after failed load %+v err %v", op, err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	op, err = svc.GetOperation(ctx, "proj", op.ID)
+	if err != nil || op.State != domain.OpSucceeded {
+		t.Fatalf("after release %+v err %v", op, err)
+	}
+}
+
+func TestFakeNilFailureIsNotLostClaim(t *testing.T) {
+	fake := newFake()
+	fake.failNext(1, nil)
+	err := fake.ensureVPC(context.Background(), domain.VPC{ID: "vpc-1"})
+	if err == nil || errors.Is(err, errLostClaim) {
+		t.Fatalf("fail error = %v", err)
+	}
+}
+
+type failLoad struct {
+	repository
+	n int
+}
+
+func (f *failLoad) load(ctx context.Context, p domain.ProjectID) (domain.State, int64, error) {
+	if f.n > 0 {
+		f.n--
+		return domain.State{}, 0, errors.New("load failed")
+	}
+	return f.repository.load(ctx, p)
+}
+
+func logIndex(calls []string, name string) int {
+	for i, c := range calls {
+		if c == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestRestartRequeuesRunningOperation(t *testing.T) {

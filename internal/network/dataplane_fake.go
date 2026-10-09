@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sync"
 
@@ -53,7 +54,7 @@ func (f *fakeDataplane) call(name string, mutate func()) error {
 		f.fails--
 		err := f.failErr
 		if err == nil {
-			err = errLostClaim
+			err = errors.New("dataplane: call failed")
 		}
 		return err
 	}
