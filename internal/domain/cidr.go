@@ -12,7 +12,8 @@ func CheckVPCCIDR(p netip.Prefix) error {
 	if p.Bits() < 16 || p.Bits() > 28 {
 		return invalid("vpc cidr prefix length must be 16 through 28")
 	}
-	if !p.Addr().IsGlobalUnicast() {
+	// IsGlobalUnicast rejects only 0.0.0.0 itself, not the rest of 0.0.0.0/8.
+	if p.Addr().As4()[0] == 0 || !p.Addr().IsGlobalUnicast() {
 		return invalid("vpc cidr must be global unicast")
 	}
 	return nil

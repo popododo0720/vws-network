@@ -30,6 +30,9 @@ func TestCheckVPCCIDR(t *testing.T) {
 		{"169.254.0.0/16", false},
 		{"224.0.0.0/16", false},
 		{"0.0.0.0/16", false},
+		{"0.1.0.0/16", false},
+		{"0.255.0.0/16", false},
+		{"240.0.0.0/16", true},
 		{"::/16", false},
 		{"not-a-cidr", false},
 	}
