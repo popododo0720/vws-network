@@ -7,8 +7,9 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/popododo0720/vws-network/internal/domain"
 	_ "modernc.org/sqlite" // registers the pure-Go sqlite driver
+
+	"github.com/popododo0720/vws-network/internal/domain"
 )
 
 const schemaVersion = 1
