@@ -84,18 +84,19 @@ const (
 )
 
 // Peer is the source or destination of a rule. Exactly one side is set.
+// JSON names are the idempotency fingerprint, so a Go rename does not change it.
 type Peer struct {
-	CIDR  netip.Prefix
-	Group SecurityGroupID
+	CIDR  netip.Prefix    `json:"cidr,omitempty"`
+	Group SecurityGroupID `json:"group,omitempty"`
 }
 
 // Rule is the authorize and revoke tuple. The value is comparable.
 type Rule struct {
-	Direction Direction
-	Protocol  Protocol
-	FromPort  int32
-	ToPort    int32
-	Peer      Peer
+	Direction Direction `json:"direction"`
+	Protocol  Protocol  `json:"protocol"`
+	FromPort  int32     `json:"from_port"`
+	ToPort    int32     `json:"to_port"`
+	Peer      Peer      `json:"peer"`
 }
 
 // SecurityGroup belongs to one VPC. Name is unique in that VPC.
@@ -125,69 +126,69 @@ type ElasticIP struct {
 
 // CreateVPC is the request body of a VPC create.
 type CreateVPC struct {
-	CIDR netip.Prefix
+	CIDR netip.Prefix `json:"cidr"`
 }
 
 // DeleteVPC names the VPC to remove.
 type DeleteVPC struct {
-	VPC VPCID
+	VPC VPCID `json:"vpc"`
 }
 
 // CreateSubnet is the request body of a subnet create.
 type CreateSubnet struct {
-	VPC  VPCID
-	CIDR netip.Prefix
-	Zone string
+	VPC  VPCID        `json:"vpc"`
+	CIDR netip.Prefix `json:"cidr"`
+	Zone string       `json:"zone"`
 }
 
 // DeleteSubnet names the subnet to remove.
 type DeleteSubnet struct {
-	Subnet SubnetID
+	Subnet SubnetID `json:"subnet"`
 }
 
 // CreateSecurityGroup is the request body of a security group create.
 type CreateSecurityGroup struct {
-	VPC  VPCID
-	Name string
+	VPC  VPCID  `json:"vpc"`
+	Name string `json:"name"`
 }
 
 // DeleteSecurityGroup names the group to remove.
 type DeleteSecurityGroup struct {
-	Group SecurityGroupID
+	Group SecurityGroupID `json:"group"`
 }
 
 // AuthorizeRules adds rules to a group. Rules are canonical before the call.
 type AuthorizeRules struct {
-	Group SecurityGroupID
-	Rules []Rule
+	Group SecurityGroupID `json:"group"`
+	Rules []Rule          `json:"rules"`
 }
 
 // RevokeRules removes rules from a group.
 type RevokeRules struct {
-	Group SecurityGroupID
-	Rules []Rule
+	Group SecurityGroupID `json:"group"`
+	Rules []Rule          `json:"rules"`
 }
 
 // AllocateElasticIP reserves one pool address in a VPC.
 type AllocateElasticIP struct {
-	VPC VPCID
+	VPC VPCID `json:"vpc"`
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
 type ReleaseElasticIP struct {
-	ElasticIP ElasticIPID
+	ElasticIP ElasticIPID `json:"elastic_ip"`
 }
 
 // AssociateElasticIP binds an elastic IP to a private address.
 // The subnet is the one that contains Private.
 type AssociateElasticIP struct {
-	ElasticIP ElasticIPID
-	Private   netip.Addr
+	ElasticIP ElasticIPID `json:"elastic_ip"`
+	Private   netip.Addr  `json:"private"`
 }
 
 // DisassociateElasticIP clears an association.
 type DisassociateElasticIP struct {
-	ElasticIP ElasticIPID
+	ElasticIP ElasticIPID `json:"elastic_ip"`
 }
 
 // OperationType is the RPC name that accepted the operation.

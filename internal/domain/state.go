@@ -201,8 +201,10 @@ func (s *State) AuthorizeRules(r AuthorizeRules) error {
 	return nil
 }
 
-// RevokeRules moves matching rules onto the revoke list. found is false when
-// none of the rules are present, which is a success with no dataplane work.
+// RevokeRules moves matching rules onto the revoke list. A rule already on
+// that list still counts as found, so a failed dataplane delete can be retried
+// without a second mark. found is false only when none of the rules are in
+// either list, which is a success with no dataplane work.
 func (s *State) RevokeRules(r RevokeRules) (bool, error) {
 	rules, err := CanonicalRules(r.Rules)
 	if err != nil {
@@ -230,6 +232,11 @@ func (s *State) RevokeRules(r RevokeRules) (bool, error) {
 			continue
 		}
 		keep = append(keep, rule)
+	}
+	for _, rule := range g.revoking {
+		if drop[rule] {
+			found = true
+		}
 	}
 	if !found {
 		return false, nil
@@ -438,8 +445,8 @@ func (s *State) DisassociateElasticIP(r DisassociateElasticIP) (bool, error) {
 }
 
 // Plan returns the dataplane calls that make id match State.
-// found is false when id is absent. A failed parent returns a precondition error
-// and no calls.
+// found is false when id is absent. A failed parent blocks ensure.
+// A deleting child is still deleted when its parent is failed or gone.
 func (s State) Plan(id string) ([]Action, bool, error) {
 	if v, ok := s.VPCs[VPCID(id)]; ok {
 		return s.planVPC(v)
@@ -541,55 +548,55 @@ func (s State) planVPC(v VPC) ([]Action, bool, error) {
 		return actions, true, nil
 	}
 	actions := []Action{{Kind: ActEnsureVPC, VPC: v}, {Kind: ActEnsureGroup, Group: g.public()}}
-	actions = append(actions, ensureRules(g)...)
+	actions = append(actions, s.ensureRules(g)...)
 	actions = append(actions, deleteRules(g, g.revoking)...)
 	return actions, true, nil
 }
 
 func (s State) planSubnet(sub Subnet) ([]Action, bool, error) {
-	v, ok := s.VPCs[sub.VPC]
-	if !ok || v.Status == StatusFailed {
-		return nil, true, precondition("vpc is failed")
+	if sub.Status == StatusDeleting {
+		return []Action{{Kind: ActDeleteSubnet, Subnet: sub}}, true, nil
 	}
 	if sub.Status == StatusFailed {
 		return nil, true, precondition("subnet is failed")
 	}
-	if sub.Status == StatusDeleting {
-		return []Action{{Kind: ActDeleteSubnet, Subnet: sub}}, true, nil
+	v, ok := s.VPCs[sub.VPC]
+	if !ok || v.Status == StatusFailed {
+		return nil, true, precondition("vpc is failed")
 	}
 	return []Action{{Kind: ActEnsureSubnet, Subnet: sub}}, true, nil
 }
 
 func (s State) planGroup(g SecurityGroup) ([]Action, bool, error) {
-	v, ok := s.VPCs[g.VPC]
-	if !ok || v.Status == StatusFailed {
-		return nil, true, precondition("vpc is failed")
-	}
-	if g.Status == StatusFailed {
-		return nil, true, precondition("security group is failed")
-	}
 	if g.Status == StatusDeleting {
 		actions := deleteRules(g, append(copyRules(g.Rules), g.revoking...))
 		return append(actions, Action{Kind: ActDeleteGroup, Group: g.public()}), true, nil
 	}
+	if g.Status == StatusFailed {
+		return nil, true, precondition("security group is failed")
+	}
+	v, ok := s.VPCs[g.VPC]
+	if !ok || v.Status == StatusFailed {
+		return nil, true, precondition("vpc is failed")
+	}
 	actions := []Action{{Kind: ActEnsureGroup, Group: g.public()}}
-	actions = append(actions, ensureRules(g)...)
+	actions = append(actions, s.ensureRules(g)...)
 	actions = append(actions, deleteRules(g, g.revoking)...)
 	return actions, true, nil
 }
 
 func (s State) planEIP(e ElasticIP) ([]Action, bool, error) {
-	v, ok := s.VPCs[e.VPC]
-	if !ok || v.Status == StatusFailed {
-		return nil, true, precondition("vpc is failed")
-	}
-	if e.Status == StatusFailed {
-		return nil, true, precondition("elastic ip is failed")
-	}
 	pub := e.public()
 	if e.Status == StatusDeleting {
 		actions := natDeletes(pub, e)
 		return append(actions, Action{Kind: ActDeleteEIP, EIP: pub}), true, nil
+	}
+	if e.Status == StatusFailed {
+		return nil, true, precondition("elastic ip is failed")
+	}
+	v, ok := s.VPCs[e.VPC]
+	if !ok || v.Status == StatusFailed {
+		return nil, true, precondition("vpc is failed")
 	}
 	actions := []Action{{Kind: ActEnsureEIP, EIP: pub}}
 	if e.Private.IsValid() {
@@ -686,10 +693,20 @@ func (e ElasticIP) public() ElasticIP {
 	return e
 }
 
-func ensureRules(g SecurityGroup) []Action {
+// ensureRules emits the group's rules. A peer security group is ensured
+// before the first rule that names it, so an earlier job that already sees
+// the rule does not install the rule first.
+func (s State) ensureRules(g SecurityGroup) []Action {
 	actions := make([]Action, 0, len(g.Rules))
 	pub := g.public()
+	seen := map[SecurityGroupID]bool{g.ID: true}
 	for _, rule := range g.Rules {
+		if peer := rule.Peer.Group; peer != "" && !seen[peer] {
+			seen[peer] = true
+			if pg, ok := s.Groups[peer]; ok && pg.Status != StatusDeleting && pg.Status != StatusFailed {
+				actions = append(actions, Action{Kind: ActEnsureGroup, Group: pg.public()})
+			}
+		}
 		actions = append(actions, Action{Kind: ActEnsureRule, Group: pub, Rule: rule})
 	}
 	return actions

@@ -1,9 +1,11 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -99,8 +101,16 @@ func TestSecurityGroupRules(t *testing.T) {
 		t.Fatal("revoked rule was not marked")
 	}
 	found, err = s.RevokeRules(RevokeRules{Group: "sg-1", Rules: []Rule{rule}})
+	if err != nil || !found {
+		t.Fatalf("revoke still in progress found %v err %v", found, err)
+	}
+	if len(s.Groups["sg-1"].revoking) != 1 {
+		t.Fatal("retry duplicated the revoke mark")
+	}
+	other := Rule{Direction: Ingress, Protocol: TCP, FromPort: 22, ToPort: 22, Peer: Peer{CIDR: mustPrefix(t, "192.0.2.0/24")}}
+	found, err = s.RevokeRules(RevokeRules{Group: "sg-1", Rules: []Rule{other}})
 	if err != nil || found {
-		t.Fatalf("second revoke found %v err %v", found, err)
+		t.Fatalf("absent rule found %v err %v", found, err)
 	}
 	if err := s.AuthorizeRules(AuthorizeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
 		t.Fatal(err)
@@ -108,6 +118,153 @@ func TestSecurityGroupRules(t *testing.T) {
 	if len(s.Groups["sg-1"].revoking) != 0 {
 		t.Fatal("re-authorize left the revoke mark")
 	}
+}
+
+func TestPlanRevokeAndSettleClearsMark(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	rule := Rule{Direction: Ingress, Protocol: TCP, FromPort: 443, ToPort: 443, Peer: Peer{CIDR: mustPrefix(t, "0.0.0.0/0")}}
+	if err := s.AuthorizeRules(AuthorizeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err := s.Plan("sg-1")
+	if err != nil || !hasAction(actions, ActEnsureRule, rule) {
+		t.Fatalf("ensure plan %+v err %v", actions, err)
+	}
+	if _, err := s.RevokeRules(RevokeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err = s.Plan("sg-1")
+	if err != nil || !hasAction(actions, ActDeleteRule, rule) {
+		t.Fatalf("delete plan %+v err %v", actions, err)
+	}
+	observed := s.Clone()
+	s.Settle("sg-1", observed)
+	if len(s.Groups["sg-1"].revoking) != 0 {
+		t.Fatal("settle left the revoke mark")
+	}
+}
+
+func TestRevokingPeerBlocksDelete(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSecurityGroup("sg-2", CreateSecurityGroup{VPC: "vpc-1", Name: "peer"}); err != nil {
+		t.Fatal(err)
+	}
+	rule := Rule{Direction: Ingress, Protocol: TCP, FromPort: 80, ToPort: 80, Peer: Peer{Group: "sg-2"}}
+	if err := s.AuthorizeRules(AuthorizeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeRules(RevokeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteSecurityGroup(DeleteSecurityGroup{Group: "sg-2"}); kindOf(err) != Precondition {
+		t.Fatalf("delete of revoking peer = %v", err)
+	}
+}
+
+func TestPlanEnsuresPeerBeforeRule(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSecurityGroup("sg-2", CreateSecurityGroup{VPC: "vpc-1", Name: "peer"}); err != nil {
+		t.Fatal(err)
+	}
+	rule := Rule{Direction: Ingress, Protocol: TCP, FromPort: 80, ToPort: 80, Peer: Peer{Group: "sg-2"}}
+	if err := s.AuthorizeRules(AuthorizeRules{Group: "sg-1", Rules: []Rule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err := s.Plan("vpc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerAt, ruleAt := -1, -1
+	for i, a := range actions {
+		if a.Kind == ActEnsureGroup && a.Group.ID == "sg-2" {
+			peerAt = i
+		}
+		if a.Kind == ActEnsureRule && a.Rule == rule {
+			ruleAt = i
+		}
+	}
+	if peerAt < 0 || ruleAt < 0 || peerAt > ruleAt {
+		t.Fatalf("peer %d rule %d plan %+v", peerAt, ruleAt, actions)
+	}
+}
+
+func TestPlanDeletesChildOfFailedVPC(t *testing.T) {
+	s := projectWithSubnet(t)
+	pool := mustPrefix(t, "198.51.100.0/28")
+	if err := s.AllocateElasticIP("eip-1", AllocateElasticIP{VPC: "vpc-1"}, pool, func(netip.Addr) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSecurityGroup("sg-2", CreateSecurityGroup{VPC: "vpc-1", Name: "extra"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Fail("vpc-1")
+	if _, _, err := s.Plan("subnet-1"); kindOf(err) != Precondition {
+		t.Fatalf("ensure under failed vpc = %v", err)
+	}
+	if _, err := s.DeleteSubnet(DeleteSubnet{Subnet: "subnet-1"}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err := s.Plan("subnet-1")
+	if err != nil || len(actions) != 1 || actions[0].Kind != ActDeleteSubnet {
+		t.Fatalf("delete subnet plan %+v err %v", actions, err)
+	}
+	if _, err := s.DeleteSecurityGroup(DeleteSecurityGroup{Group: "sg-2"}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err = s.Plan("sg-2")
+	if err != nil || actions[len(actions)-1].Kind != ActDeleteGroup {
+		t.Fatalf("delete group plan %+v err %v", actions, err)
+	}
+	if _, err := s.ReleaseElasticIP(ReleaseElasticIP{ElasticIP: "eip-1"}); err != nil {
+		t.Fatal(err)
+	}
+	actions, _, err = s.Plan("eip-1")
+	if err != nil || actions[len(actions)-1].Kind != ActDeleteEIP {
+		t.Fatalf("delete eip plan %+v err %v", actions, err)
+	}
+}
+
+func TestRequestJSONNames(t *testing.T) {
+	b, err := json.Marshal(CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"cidr":"10.0.0.0/16"}` {
+		t.Fatalf("create vpc json %s", b)
+	}
+	var got CreateVPC
+	if err := json.Unmarshal([]byte(`{"cidr":"10.2.0.0/16"}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CIDR != mustPrefix(t, "10.2.0.0/16") {
+		t.Fatalf("decoded %v", got.CIDR)
+	}
+	rule := Rule{Direction: Ingress, Protocol: TCP, FromPort: 22, ToPort: 22, Peer: Peer{Group: "sg-2"}}
+	b, err = json.Marshal(AuthorizeRules{Group: "sg-1", Rules: []Rule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(b) || !strings.Contains(string(b), `"group":"sg-1"`) || !strings.Contains(string(b), `"from_port":22`) {
+		t.Fatalf("authorize json %s", b)
+	}
+}
+
+func hasAction(actions []Action, kind ActionKind, rule Rule) bool {
+	for _, a := range actions {
+		if a.Kind == kind && a.Rule == rule {
+			return true
+		}
+	}
+	return false
 }
 
 func TestElasticIPRules(t *testing.T) {
