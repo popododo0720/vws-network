@@ -6,7 +6,8 @@
 
 | 규칙 | 강제 |
 | --- | --- |
-| VPC CIDR은 정규 IPv4이고 길이는 /16에서 /28이다. 한 프로젝트 안에서는 겹치지 않는다. | `domain.CheckVPCCIDR`, `(*State).CreateVPC`, `TestCheckVPCCIDR`, `TestVPCOverlapAndSubnetContainment`, `TestServiceAgainstStores/overlap_writes_nothing` |
+| VPC CIDR은 정규 IPv4이고 길이는 /16에서 /28이다. `0.0.0.0/8`은 거절한다. 한 프로젝트 안에서는 겹치지 않는다. | `domain.CheckVPCCIDR`, `(*State).CreateVPC`, `TestCheckVPCCIDR`, `TestVPCOverlapAndSubnetContainment`, `TestServiceAgainstStores/overlap_writes_nothing` |
+| VPC를 다시 지워도 빈 보안 그룹을 만들지 않는다. | `(*State).DeleteVPC`, `TestDeleteVPCWithoutDefaultGroup`, `TestRetryVPCDeleteDoesNotCreateGhostGroup` |
 | 서브넷 CIDR은 VPC 안에 있고, 같은 VPC의 서브넷과 겹치지 않으며, /28보다 길지 않다. | `domain.CheckSubnetCIDR`, `(*State).CreateSubnet`, 위 테스트 |
 | 규칙의 피어 CIDR은 VPC CIDR 검사를 타지 않는다. `0.0.0.0/0`을 허용한다. | `domain.CheckRule`, `TestPeerCIDRIsNotVPCCIDR` |
 | 의존 리소스가 있으면 삭제를 거절한다. 이미 없는 대상의 삭제는 성공한다. | `(*State).DeleteVPC`와 같은 메서드, `testConvergeAndDelete`, `testIdempotency` |
