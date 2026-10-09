@@ -1,0 +1,272 @@
+package domain
+
+import "net/netip"
+
+// ProjectID partitions every resource.
+type ProjectID string
+
+// IdempotencyKey is unique per project for the life of the store.
+type IdempotencyKey string
+
+// VPCID identifies a VPC. Identifiers are unique across resource kinds.
+type VPCID string
+
+// SubnetID identifies a subnet.
+type SubnetID string
+
+// SecurityGroupID identifies a security group.
+type SecurityGroupID string
+
+// ElasticIPID identifies an elastic IP.
+type ElasticIPID string
+
+// Call is the project and idempotency key on every mutation.
+type Call struct {
+	Project ProjectID
+	Key     IdempotencyKey
+}
+
+// Validate rejects an empty project or key, and a key longer than 128 bytes.
+func (c Call) Validate() error {
+	if c.Project == "" || len(c.Project) > 128 {
+		return invalid("project id is required")
+	}
+	if c.Key == "" || len(c.Key) > 128 {
+		return invalid("idempotency key is required")
+	}
+	return nil
+}
+
+// Status is a resource lifecycle. Failed accepts only delete or release.
+// Deleting and Failed still occupy their CIDR, name, and address.
+type Status int
+
+const (
+	StatusPending Status = iota + 1
+	StatusAvailable
+	StatusDeleting
+	StatusFailed
+)
+
+// VPC is one network. CIDR is immutable. DefaultGroup lives exactly as long as the VPC.
+type VPC struct {
+	ID           VPCID
+	CIDR         netip.Prefix
+	DefaultGroup SecurityGroupID
+	Status       Status
+}
+
+// Subnet is one range inside a VPC. CIDR is immutable. Zone is stored and not a catalog lookup.
+type Subnet struct {
+	ID     SubnetID
+	VPC    VPCID
+	CIDR   netip.Prefix
+	Zone   string
+	Status Status
+}
+
+// Direction is the side of a security group rule.
+type Direction int
+
+const (
+	Ingress Direction = iota + 1
+	Egress
+)
+
+// Protocol is the protocol of a security group rule.
+type Protocol int
+
+const (
+	TCP Protocol = iota + 1
+	UDP
+	ICMP
+	All
+)
+
+// Peer is the source or destination of a rule. Exactly one side is set.
+type Peer struct {
+	CIDR  netip.Prefix
+	Group SecurityGroupID
+}
+
+// Rule is the authorize and revoke tuple. The value is comparable.
+type Rule struct {
+	Direction Direction
+	Protocol  Protocol
+	FromPort  int32
+	ToPort    int32
+	Peer      Peer
+}
+
+// SecurityGroup belongs to one VPC. Name is unique in that VPC.
+// revoking holds rules whose dataplane delete is not yet confirmed.
+type SecurityGroup struct {
+	ID       SecurityGroupID
+	VPC      VPCID
+	Name     string
+	Default  bool
+	Rules    []Rule
+	revoking []Rule
+	Status   Status
+}
+
+// ElasticIP is one address from the pool. Address is fixed at allocation.
+// Subnet is set only while Private is associated. detaching holds addresses
+// whose NAT delete is not yet confirmed.
+type ElasticIP struct {
+	ID        ElasticIPID
+	VPC       VPCID
+	Address   netip.Addr
+	Private   netip.Addr
+	Subnet    SubnetID
+	detaching []netip.Addr
+	Status    Status
+}
+
+// CreateVPC is the request body of a VPC create.
+type CreateVPC struct {
+	CIDR netip.Prefix
+}
+
+// DeleteVPC names the VPC to remove.
+type DeleteVPC struct {
+	VPC VPCID
+}
+
+// CreateSubnet is the request body of a subnet create.
+type CreateSubnet struct {
+	VPC  VPCID
+	CIDR netip.Prefix
+	Zone string
+}
+
+// DeleteSubnet names the subnet to remove.
+type DeleteSubnet struct {
+	Subnet SubnetID
+}
+
+// CreateSecurityGroup is the request body of a security group create.
+type CreateSecurityGroup struct {
+	VPC  VPCID
+	Name string
+}
+
+// DeleteSecurityGroup names the group to remove.
+type DeleteSecurityGroup struct {
+	Group SecurityGroupID
+}
+
+// AuthorizeRules adds rules to a group. Rules are canonical before the call.
+type AuthorizeRules struct {
+	Group SecurityGroupID
+	Rules []Rule
+}
+
+// RevokeRules removes rules from a group.
+type RevokeRules struct {
+	Group SecurityGroupID
+	Rules []Rule
+}
+
+// AllocateElasticIP reserves one pool address in a VPC.
+type AllocateElasticIP struct {
+	VPC VPCID
+}
+
+// ReleaseElasticIP returns an unassociated address to the pool.
+type ReleaseElasticIP struct {
+	ElasticIP ElasticIPID
+}
+
+// AssociateElasticIP binds an elastic IP to a private address.
+// The subnet is the one that contains Private.
+type AssociateElasticIP struct {
+	ElasticIP ElasticIPID
+	Private   netip.Addr
+}
+
+// DisassociateElasticIP clears an association.
+type DisassociateElasticIP struct {
+	ElasticIP ElasticIPID
+}
+
+// OperationType is the RPC name that accepted the operation.
+type OperationType string
+
+const (
+	OpCreateVPC             OperationType = "CreateVpc"
+	OpDeleteVPC             OperationType = "DeleteVpc"
+	OpCreateSubnet          OperationType = "CreateSubnet"
+	OpDeleteSubnet          OperationType = "DeleteSubnet"
+	OpCreateSecurityGroup   OperationType = "CreateSecurityGroup"
+	OpDeleteSecurityGroup   OperationType = "DeleteSecurityGroup"
+	OpAuthorizeRules        OperationType = "AuthorizeSecurityGroupRules"
+	OpRevokeRules           OperationType = "RevokeSecurityGroupRules"
+	OpAllocateElasticIP     OperationType = "AllocateElasticIp"
+	OpReleaseElasticIP      OperationType = "ReleaseElasticIp"
+	OpAssociateElasticIP    OperationType = "AssociateElasticIp"
+	OpDisassociateElasticIP OperationType = "DisassociateElasticIp"
+)
+
+// OperationTypes is every mutation RPC name. A test checks each one exists
+// on the generated service.
+func OperationTypes() []OperationType {
+	return []OperationType{
+		OpCreateVPC, OpDeleteVPC,
+		OpCreateSubnet, OpDeleteSubnet,
+		OpCreateSecurityGroup, OpDeleteSecurityGroup,
+		OpAuthorizeRules, OpRevokeRules,
+		OpAllocateElasticIP, OpReleaseElasticIP,
+		OpAssociateElasticIP, OpDisassociateElasticIP,
+	}
+}
+
+// OpState is the caller-visible operation lifecycle. Succeeded and Failed are terminal.
+type OpState int
+
+const (
+	OpPending OpState = iota + 1
+	OpRunning
+	OpSucceeded
+	OpFailed
+)
+
+// Operation is one accepted mutation. Err is set only when State is OpFailed.
+type Operation struct {
+	ID       string
+	Project  ProjectID
+	Type     OperationType
+	Resource string
+	State    OpState
+	Err      *Error
+	Key      IdempotencyKey
+}
+
+// ActionKind is one dataplane call, in the order Plan returns.
+type ActionKind int
+
+const (
+	ActEnsureVPC ActionKind = iota + 1
+	ActDeleteVPC
+	ActEnsureSubnet
+	ActDeleteSubnet
+	ActEnsureGroup
+	ActDeleteGroup
+	ActEnsureRule
+	ActDeleteRule
+	ActEnsureEIP
+	ActDeleteEIP
+	ActEnsureNAT
+	ActDeleteNAT
+)
+
+// Action is one idempotent dataplane call. Group rules travel as their own actions.
+type Action struct {
+	Kind   ActionKind
+	VPC    VPC
+	Subnet Subnet
+	Group  SecurityGroup
+	Rule   Rule
+	EIP    ElasticIP
+	Addr   netip.Addr
+}
