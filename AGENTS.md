@@ -14,6 +14,13 @@
 | 변경은 멱등 키로 한 번만 적용된다. 거절된 요청은 키를 남기지 않는다. | `(*Service).mutate`, `testIdempotency`, `testOverlapWritesNothing` |
 | 원하는 상태와 그 연산은 한 번에 커밋된다. | `repository.commit`, `TestRepositoryContract` |
 | 재시작은 `RUNNING` 연산을 `PENDING`으로 되돌리고 같은 경로로 수렴한다. | `repository.requeue`, `TestRestartRequeuesRunningOperation`, `TestSQLiteSurvivesReopen` |
+| 실패한 VPC의 삭제 중인 서브넷, 보안 그룹, 엘라스틱 IP는 계속 지운다. | `planSubnet`, `planGroup`, `planEIP`, `TestPlanDeletesChildOfFailedVPC`, `TestServiceAgainstStores/delete_children_of_failed_vpc` |
+| 철회 중인 규칙은 데이터플레인 삭제에 실패해도 다시 철회된다. | `(*State).RevokeRules`, `TestPlanRevokeAndSettleClearsMark`, `TestServiceAgainstStores/revoke_retries_after_failure` |
+| 피어 보안 그룹은 그 그룹을 가리키는 규칙보다 먼저 보장된다. | `(*State).ensureRules`, `TestPlanEnsuresPeerBeforeRule`, `TestPeerGroupEnsuredBeforeRule` |
+| 클레임이 정산되지 않으면 그 연산을 `PENDING`으로 되돌린다. | `(*Service).step`, `TestStepReleasesClaimWhenLoadFails` |
+| 틀린 클레임 토큰이나 이미 끝난 연산은 상태를 쓰지 않는다. | `repository.commit`, `TestSettleTokenGuardsState` |
+| SQLite 스키마와 `user_version`은 한 트랜잭션이고, `busy_timeout`은 연결에 붙는다. | `openSQLite`, `TestSQLiteSchemaIsOneVersion` |
+| 멱등 지문은 요청의 JSON 이름으로 계산한다. | 요청 구조체의 `json` 태그, `TestRequestJSONNames` |
 | 데이터플레인 구현은 가짜 하나이고, 다른 패키지에서 호출할 수 없다. | 비공개 `dataplane`, `fakeDataplane`, `var _ dataplane = (*fakeDataplane)(nil)` |
 | RPC를 추가하면 핸들러를 비워 둘 수 없다. | `TestHandlersOverrideUnimplemented` |
 | 연산 타입 문자열은 RPC 이름과 같다. | `domain.OperationTypes`, `TestOperationTypesAreRPCNames` |
