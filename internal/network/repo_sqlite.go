@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/netip"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the pure-Go sqlite driver
@@ -12,7 +14,10 @@ import (
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
-const schemaVersion = 1
+// schemaVersion 2 rewrites project documents so description and labels survive.
+// Version 1 is the previous document. Opening it migrates in one transaction
+// with the user_version bump.
+const schemaVersion = 2
 
 const opSelect = `SELECT seq, id, project, type, resource, lane, state, err_kind, err_msg, key, fingerprint, attempts, not_before, token FROM operations`
 
@@ -78,7 +83,7 @@ CREATE TABLE addresses (
 			_ = db.Close()
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+strconv.Itoa(schemaVersion)); err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
 			return nil, err
@@ -87,11 +92,81 @@ CREATE TABLE addresses (
 			_ = db.Close()
 			return nil, err
 		}
+	} else if version < schemaVersion {
+		if err := migrateSQLite(ctx, db, version); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	} else if version != schemaVersion {
 		_ = db.Close()
 		return nil, errors.New("network: unsupported sqlite schema version")
 	}
 	return r, nil
+}
+
+// migrateSQLite rewrites stored documents and sets user_version in one transaction.
+func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for version < schemaVersion {
+		switch version {
+		case 1:
+			if err := rewriteProjectDocuments(ctx, tx); err != nil {
+				return err
+			}
+		default:
+			return errors.New("network: unsupported sqlite schema version")
+		}
+		version++
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+strconv.Itoa(schemaVersion)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func rewriteProjectDocuments(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM projects`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id    string
+		state []byte
+	}
+	var saved []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.state); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		saved = append(saved, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range saved {
+		st, err := domain.UnmarshalState(item.state)
+		if err != nil {
+			return fmt.Errorf("network: project %s: %w", item.id, err)
+		}
+		blob, err := domain.MarshalState(st)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET state = ? WHERE id = ?`, blob, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *sqliteRepo) lock(ctx context.Context) error {
