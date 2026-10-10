@@ -150,6 +150,9 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
 		return domain.Operation{}, err
 	}
+	if err := storedText(r.Text); err != nil {
+		return domain.Operation{}, err
+	}
 	id := string(r.ID)
 	if id == "" {
 		id = s.newID("vpc-")
@@ -157,7 +160,7 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	sg := s.newID("sg-")
 	return s.mutate(ctx, c, domain.OpCreateVPC, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if v, ok := st.VPCs[domain.VPCID(id)]; ok {
-			if v.CIDR == r.CIDR && v.Region == r.Region && (v.Status == domain.StatusPending || v.Status == domain.StatusAvailable) {
+			if v.CIDR == r.CIDR && v.Region == r.Region && v.Description == r.Description && domain.SameLabels(v.Labels, r.Labels) && (v.Status == domain.StatusPending || v.Status == domain.StatusAvailable) {
 				return false, nil
 			}
 			return false, &domain.Error{Kind: domain.Conflict, Msg: "vpc id already exists"}
@@ -166,11 +169,15 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	})
 }
 
-// UpdateVPC rejects a CIDR change. An identical CIDR is a succeeded no-op.
-// allow_missing creates the VPC.
+// UpdateVPC rejects a CIDR change. The same CIDR and text is a succeeded no-op.
+// A text change is stored and the operation succeeds without dataplane work.
+// allow_missing creates the VPC when the request includes a CIDR.
 func (s *Service) UpdateVPC(ctx context.Context, c domain.Call, r domain.CreateVPC) (domain.Operation, error) {
 	if r.ID == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
+	}
+	if err := maskedText(r.Text); err != nil {
+		return domain.Operation{}, err
 	}
 	if !r.Keep {
 		if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
@@ -180,23 +187,23 @@ func (s *Service) UpdateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	sg := s.newID("sg-")
 	body := any(r)
 	if r.Keep {
-		body = keepBody{ID: string(r.ID), Region: r.Region, Keep: true}
+		body = kept(string(r.ID), "", r.Region, r.Text)
 	}
 	return s.mutate(ctx, c, domain.OpUpdateVPC, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if v, ok := st.VPCs[r.ID]; ok {
 			if otherName(v.Region, r.Region, "", "") {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
 			}
-			if r.Keep || v.CIDR == r.CIDR {
-				return false, nil
+			if !r.Keep && v.CIDR != r.CIDR {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
 			}
-			return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
-		}
-		if r.Keep {
-			return false, &domain.Error{Kind: domain.Invalid, Msg: "vpc spec is required"}
+			return st.ApplyVPCText(r.ID, r)
 		}
 		if !r.AllowMissing {
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
+		}
+		if r.Keep {
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "vpc spec is required"}
 		}
 		return true, st.CreateVPC(r.ID, domain.SecurityGroupID(sg), r)
 	})
@@ -224,13 +231,16 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 	if r.VPC == "" || r.Zone == "" || !r.CIDR.IsValid() {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
+	if err := storedText(r.Text); err != nil {
+		return domain.Operation{}, err
+	}
 	id := string(r.ID)
 	if id == "" {
 		id = s.newID("subnet-")
 	}
 	return s.mutate(ctx, c, domain.OpCreateSubnet, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if sub, ok := st.Subnets[domain.SubnetID(id)]; ok {
-			if sub.VPC == r.VPC && sub.CIDR == r.CIDR && sub.Zone == r.Zone && sub.Region == r.Region && (sub.Status == domain.StatusPending || sub.Status == domain.StatusAvailable) {
+			if sub.VPC == r.VPC && sub.CIDR == r.CIDR && sub.Zone == r.Zone && sub.Region == r.Region && sub.Description == r.Description && domain.SameLabels(sub.Labels, r.Labels) && (sub.Status == domain.StatusPending || sub.Status == domain.StatusAvailable) {
 				return false, nil
 			}
 			return false, &domain.Error{Kind: domain.Conflict, Msg: "subnet id already exists"}
@@ -239,36 +249,37 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 	})
 }
 
-// UpdateSubnet rejects a CIDR or zone change. An identical spec is a succeeded no-op.
+// UpdateSubnet rejects a CIDR or zone change. The same spec and text is a succeeded no-op.
+// A text change is stored and the operation succeeds without dataplane work.
 func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.CreateSubnet) (domain.Operation, error) {
 	if r.ID == "" || r.VPC == "" || (!r.Keep && (r.Zone == "" || !r.CIDR.IsValid())) {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
+	if err := maskedText(r.Text); err != nil {
+		return domain.Operation{}, err
+	}
 	body := any(r)
 	if r.Keep {
-		body = keepBody{ID: string(r.ID), Region: r.Region, Parent: string(r.VPC), Keep: true}
+		body = kept(string(r.ID), string(r.VPC), r.Region, r.Text)
 	}
 	return s.mutate(ctx, c, domain.OpUpdateSubnet, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if sub, ok := st.Subnets[r.ID]; ok {
 			if otherName(sub.Region, r.Region, sub.VPC, r.VPC) {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
 			}
-			if r.Keep {
-				return false, nil
-			}
-			if sub.CIDR != r.CIDR {
+			if !r.Keep && sub.CIDR != r.CIDR {
 				return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
 			}
-			if sub.Zone != r.Zone {
+			if !r.Keep && sub.Zone != r.Zone {
 				return false, &domain.Error{Kind: domain.Invalid, Msg: "zone is immutable"}
 			}
-			return false, nil
+			return st.ApplySubnetText(r.ID, r)
 		}
-		if r.Keep || !r.AllowMissing {
-			if r.Keep {
-				return false, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
-			}
+		if !r.AllowMissing {
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+		}
+		if r.Keep {
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 		}
 		return true, st.CreateSubnet(r.ID, r)
 	})
@@ -296,6 +307,9 @@ func (s *Service) CreateSecurityGroup(ctx context.Context, c domain.Call, r doma
 	if r.VPC == "" || r.Name == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group vpc and name are required"}
 	}
+	if err := storedText(r.Text); err != nil {
+		return domain.Operation{}, err
+	}
 	var rules []domain.Rule
 	if len(r.Rules) > 0 {
 		canon, err := domain.CanonicalRules(r.Rules)
@@ -311,7 +325,7 @@ func (s *Service) CreateSecurityGroup(ctx context.Context, c domain.Call, r doma
 	}
 	return s.mutate(ctx, c, domain.OpCreateSecurityGroup, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if g, ok := st.Groups[domain.SecurityGroupID(id)]; ok {
-			if g.VPC == r.VPC && g.Name == r.Name && g.Region == r.Region && sameRules(g.Rules, rules, r.ReplaceRules) && (g.Status == domain.StatusPending || g.Status == domain.StatusAvailable) {
+			if g.VPC == r.VPC && g.Name == r.Name && g.Region == r.Region && g.Description == r.Description && domain.SameLabels(g.Labels, r.Labels) && sameRules(g.Rules, rules, r.ReplaceRules) && (g.Status == domain.StatusPending || g.Status == domain.StatusAvailable) {
 				return false, nil
 			}
 			return false, &domain.Error{Kind: domain.Conflict, Msg: "security group id already exists"}
@@ -338,6 +352,9 @@ func (s *Service) CreateSecurityGroup(ctx context.Context, c domain.Call, r doma
 func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r domain.CreateSecurityGroup) (domain.Operation, error) {
 	if r.ID == "" || r.VPC == "" || r.Name == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group vpc and name are required"}
+	}
+	if err := maskedText(r.Text); err != nil {
+		return domain.Operation{}, err
 	}
 	var rules []domain.Rule
 	if len(r.Rules) > 0 {
@@ -378,10 +395,19 @@ func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r doma
 		if g.Default {
 			return false, &domain.Error{Kind: domain.Precondition, Msg: "default security group cannot be changed"}
 		}
-		if r.KeepRules {
-			return false, nil
+		rulesChanged := false
+		if !r.KeepRules {
+			var err error
+			rulesChanged, err = syncRules(st, g, rules)
+			if err != nil {
+				return false, err
+			}
 		}
-		return syncRules(st, g, rules)
+		textChanged, err := st.ApplyGroupText(r.ID, r)
+		if err != nil {
+			return false, err
+		}
+		return rulesChanged || textChanged, nil
 	})
 }
 
@@ -437,13 +463,16 @@ func (s *Service) AllocateElasticIP(ctx context.Context, c domain.Call, r domain
 	if r.VPC == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
+	if err := domain.CheckLabels(r.Labels); err != nil {
+		return domain.Operation{}, err
+	}
 	id := string(r.ID)
 	if id == "" {
 		id = s.newID("eip-")
 	}
 	return s.mutate(ctx, c, domain.OpAllocateElasticIP, id, r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
 		if e, ok := st.ElasticIPs[domain.ElasticIPID(id)]; ok {
-			if e.VPC == r.VPC && e.Region == r.Region && (e.Status == domain.StatusPending || e.Status == domain.StatusAvailable) {
+			if e.VPC == r.VPC && e.Region == r.Region && domain.SameLabels(e.Labels, r.Labels) && (e.Status == domain.StatusPending || e.Status == domain.StatusAvailable) {
 				return false, nil
 			}
 			return false, &domain.Error{Kind: domain.Conflict, Msg: "elastic ip id already exists"}
@@ -484,6 +513,11 @@ func (s *Service) DisassociateElasticIP(ctx context.Context, c domain.Call, r do
 	if r.ElasticIP == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip id is required"}
 	}
+	if r.SetLabels {
+		if err := domain.CheckLabels(r.Labels); err != nil {
+			return domain.Operation{}, err
+		}
+	}
 	return s.mutate(ctx, c, domain.OpDisassociateElasticIP, string(r.ElasticIP), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		e, ok := st.ElasticIPs[r.ElasticIP]
 		if ok && otherName(e.Region, r.Region, "", "") {
@@ -496,20 +530,54 @@ func (s *Service) DisassociateElasticIP(ctx context.Context, c domain.Call, r do
 			if r.RejectMissing {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
 			}
-		}
-		if r.Keep {
 			return false, nil
 		}
-		return st.DisassociateElasticIP(r)
+		if r.Keep {
+			return st.ApplyAddressText(r.ElasticIP, r.Labels, r.SetLabels)
+		}
+		changed, err := st.DisassociateElasticIP(r)
+		if err != nil {
+			return false, err
+		}
+		textChanged, err := st.ApplyAddressText(r.ElasticIP, r.Labels, r.SetLabels)
+		if err != nil {
+			return false, err
+		}
+		return changed || textChanged, nil
 	})
 }
 
 // keepBody is the fingerprint of an update that does not touch the spec.
+// Text is included so a label or description change is a different request.
 type keepBody struct {
 	ID     string `json:"id"`
 	Parent string `json:"parent,omitempty"`
 	Region string `json:"region,omitempty"`
 	Keep   bool   `json:"keep"`
+	domain.Text
+}
+
+func kept(id, parent, region string, text domain.Text) keepBody {
+	return keepBody{ID: id, Parent: parent, Region: region, Keep: true, Text: text}
+}
+
+func storedText(text domain.Text) error {
+	if err := domain.CheckDescription(text.Description); err != nil {
+		return err
+	}
+	return domain.CheckLabels(text.Labels)
+}
+
+func maskedText(text domain.Text) error {
+	if text.SetDescription {
+		if err := domain.CheckDescription(text.Description); err != nil {
+			return err
+		}
+	}
+	if text.SetLabels {
+		return domain.CheckLabels(text.Labels)
+	}
+	return nil
 }
 
 // otherName reports that a stored resource is not the one named by the request.
@@ -798,16 +866,17 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 			ID: s.newID("op-"), Project: c.Project, Type: typ, Resource: resource,
 			State: domain.OpPending, Key: c.Key,
 		}
+		reconcile := write && !st.TextOnly(clone)
 		lane, _ := clone.LaneKind(domain.KindOf(typ), resource)
+		if !reconcile {
+			op.State = domain.OpSucceeded
+			lane = ""
+		}
 		enq := &job{op: op, fingerprint: fp, lane: lane}
 		cmt := commit{project: c.Project, enqueue: enq}
 		if write {
 			cmt.base = ver
 			cmt.state = &clone
-		} else {
-			op.State = domain.OpSucceeded
-			enq.op = op
-			enq.lane = ""
 		}
 		if err := s.repo.commit(ctx, cmt); err != nil {
 			if errors.Is(err, errStale) || errors.Is(err, errAddressTaken) || errors.Is(err, errKeyTaken) {
@@ -816,7 +885,7 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 			}
 			return domain.Operation{}, err
 		}
-		if write {
+		if reconcile {
 			s.nudge()
 		}
 		return op, nil

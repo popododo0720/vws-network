@@ -650,6 +650,179 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestLabelsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openTest(t, newMemRepo())
+	req := domain.CreateVPC{
+		CIDR: mustP("10.50.0.0/16"), ID: "app", Region: "r1",
+		Text: domain.Text{Description: "edge", Labels: map[string]string{"vws-fingerprint": "fp-1"}},
+	}
+	first, err := svc.CreateVPC(ctx, call("a1001", "vpc"), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateVPC(ctx, call("a1001", "vpc"), req)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replay %+v err %v", second, err)
+	}
+	other := req
+	other.Labels = map[string]string{"vws-fingerprint": "other"}
+	if _, err := svc.CreateVPC(ctx, call("a1001", "vpc"), other); kind(err) != domain.Conflict {
+		t.Fatalf("different labels = %v", err)
+	}
+	bad := domain.CreateVPC{CIDR: mustP("10.51.0.0/16"), ID: "bad", Text: domain.Text{Labels: map[string]string{"Bad": "x"}}}
+	if _, err := svc.CreateVPC(ctx, call("a1001", "bad"), bad); kind(err) != domain.Invalid {
+		t.Fatalf("bad label = %v", err)
+	}
+	if _, err := svc.CreateVPC(ctx, call("a1001", "bad"), domain.CreateVPC{CIDR: mustP("10.51.0.0/16"), ID: "bad"}); err != nil {
+		t.Fatalf("rejected label consumed the key: %v", err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	up := domain.CreateVPC{
+		ID: "app", Region: "r1", Keep: true,
+		Text: domain.Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "fp-2"}, SetDescription: true, Description: "edge-2"},
+	}
+	updated, err := svc.UpdateVPC(ctx, call("a1001", "up"), up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := svc.UpdateVPC(ctx, call("a1001", "up"), up)
+	if err != nil || replay.ID != updated.ID {
+		t.Fatalf("update replay %+v err %v", replay, err)
+	}
+	up.Labels = map[string]string{"vws-fingerprint": "fp-3"}
+	if _, err := svc.UpdateVPC(ctx, call("a1001", "up"), up); kind(err) != domain.Conflict {
+		t.Fatalf("update conflict = %v", err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := svc.GetVPC(ctx, "a1001", "app")
+	if err != nil || vpc.Description != "edge-2" || vpc.Labels["vws-fingerprint"] != "fp-2" {
+		t.Fatalf("vpc %+v err %v", vpc, err)
+	}
+}
+
+func TestLabelUpdateSkipsDataplane(t *testing.T) {
+	ctx := context.Background()
+	svc, fake := openTest(t, newMemRepo())
+	if _, err := svc.CreateVPC(ctx, call("a1001", "vpc"), domain.CreateVPC{
+		CIDR: mustP("10.52.0.0/16"), ID: "app", Region: "r1",
+		Text: domain.Text{Labels: map[string]string{"pending": ""}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	before := len(fake.log())
+	fake.failNext(5, errors.New("boom"))
+	op, err := svc.UpdateVPC(ctx, call("a1001", "up"), domain.CreateVPC{
+		ID: "app", Region: "r1", Keep: true,
+		Text: domain.Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "fp-2"}},
+	})
+	if err != nil || op.State != domain.OpSucceeded {
+		t.Fatalf("update %+v err %v", op, err)
+	}
+	if len(fake.log()) != before {
+		t.Fatalf("label update called the dataplane: %v", fake.log()[before:])
+	}
+	vpc, err := svc.GetVPC(ctx, "a1001", "app")
+	if err != nil || vpc.Labels["vws-fingerprint"] != "fp-2" || len(vpc.Labels) != 1 {
+		t.Fatalf("vpc %+v err %v", vpc, err)
+	}
+	if _, err := svc.UpdateVPC(ctx, call("a1001", "gone"), domain.CreateVPC{
+		ID: "missing", Region: "r1", Keep: true,
+		Text: domain.Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "fp"}},
+	}); kind(err) != domain.NotFound {
+		t.Fatalf("missing vpc = %v", err)
+	}
+	if _, err := svc.UpdateSubnet(ctx, call("a1001", "sub-gone"), domain.CreateSubnet{
+		ID: "missing", VPC: "app", Region: "r1", Keep: true,
+		Text: domain.Text{SetDescription: true, Description: "web"},
+	}); kind(err) != domain.NotFound {
+		t.Fatalf("missing subnet = %v", err)
+	}
+}
+
+func TestLabelsSurviveReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "net.db")
+	repo, err := openSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := newService(ctx, repo, newFake(), mustP("198.51.100.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateVPC(ctx, call("a1001", "vpc"), domain.CreateVPC{
+		CIDR: mustP("10.60.0.0/16"), ID: "app", Region: "r1",
+		Text: domain.Text{Description: "edge", Labels: map[string]string{"vws-fingerprint": "vpc"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSubnet(ctx, call("a1001", "sub"), domain.CreateSubnet{
+		VPC: "app", CIDR: mustP("10.60.1.0/24"), Zone: "az1", ID: "web", Region: "r1",
+		Text: domain.Text{Description: "web", Labels: map[string]string{"vws-fingerprint": "sub"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSecurityGroup(ctx, call("a1001", "sg"), domain.CreateSecurityGroup{
+		VPC: "app", Name: "web", ID: "web", Region: "r1",
+		Text: domain.Text{Description: "group", Labels: map[string]string{"vws-fingerprint": "sg"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AllocateElasticIP(ctx, call("a1001", "eip"), domain.AllocateElasticIP{
+		VPC: "app", ID: "eip", Region: "r1", Labels: map[string]string{"vws-fingerprint": "eip"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateVPC(ctx, call("a1001", "up"), domain.CreateVPC{
+		ID: "app", Region: "r1", Keep: true,
+		Text: domain.Text{SetDescription: true, Description: "edge-2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.close()
+	again, err := newService(ctx, reopened, newFake(), mustP("198.51.100.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(again); err != nil {
+		t.Fatal(err)
+	}
+	vpc, err := again.GetVPC(ctx, "a1001", "app")
+	if err != nil || vpc.Description != "edge-2" || vpc.Labels["vws-fingerprint"] != "vpc" {
+		t.Fatalf("vpc %+v err %v", vpc, err)
+	}
+	sub, err := again.GetSubnet(ctx, "a1001", "web")
+	if err != nil || sub.Description != "web" || sub.Labels["vws-fingerprint"] != "sub" {
+		t.Fatalf("subnet %+v err %v", sub, err)
+	}
+	group, err := again.GetSecurityGroup(ctx, "a1001", "web")
+	if err != nil || group.Description != "group" || group.Labels["vws-fingerprint"] != "sg" {
+		t.Fatalf("group %+v err %v", group, err)
+	}
+	eip, err := again.GetElasticIP(ctx, "a1001", "eip")
+	if err != nil || eip.Labels["vws-fingerprint"] != "eip" {
+		t.Fatalf("address %+v err %v", eip, err)
+	}
+}
+
 func TestAttemptsExhaustedMarksFailed(t *testing.T) {
 	ctx := context.Background()
 	fake := newFake()
