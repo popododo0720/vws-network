@@ -37,6 +37,7 @@ func TestServiceAgainstStores(t *testing.T) {
 			t.Run("revoke retries after failure", func(t *testing.T) { testRevokeRetriesAfterFailure(t, opener.open(t)) })
 			t.Run("delete children of failed vpc", func(t *testing.T) { testDeleteChildrenOfFailedVPC(t, opener.open(t)) })
 			t.Run("cross vpc peer", func(t *testing.T) { testCrossVPCPeerIsNotFound(t, opener.open(t)) })
+			t.Run("other region leaves the vpc", func(t *testing.T) { testOtherRegionLeavesVPC(t, opener.open(t)) })
 		})
 	}
 }
@@ -671,6 +672,31 @@ func TestAttemptsExhaustedMarksFailed(t *testing.T) {
 	vpc, err := svc.GetVPC(ctx, "proj", domain.VPCID(op.Resource))
 	if err != nil || vpc.Status != domain.StatusFailed {
 		t.Fatalf("vpc %+v err %v", vpc, err)
+	}
+}
+
+func testOtherRegionLeavesVPC(t *testing.T, repo repository) {
+	t.Helper()
+	svc, _ := openTest(t, repo)
+	ctx := context.Background()
+	if _, err := svc.CreateVPC(ctx, call("proj", "a"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16"), ID: "app", Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.DeleteVPC(ctx, call("proj", "b"), domain.DeleteVPC{VPC: "app", Region: "r2", RejectMissing: true})
+	if kind(err) != domain.NotFound {
+		t.Fatalf("delete other region = %v", err)
+	}
+	if _, err := svc.UpdateVPC(ctx, call("proj", "c"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16"), ID: "app", Region: "r2"}); kind(err) != domain.NotFound {
+		t.Fatalf("update other region = %v", err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", "app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeleteVPC(ctx, call("proj", "d"), domain.DeleteVPC{VPC: "app", Region: "r2"}); err != nil {
+		t.Fatalf("allow missing other region = %v", err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", "app"); err != nil {
+		t.Fatal(err)
 	}
 }
 

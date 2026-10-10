@@ -139,10 +139,12 @@ type CreateVPC struct {
 }
 
 // DeleteVPC names the VPC to remove.
-// RejectMissing is not part of the idempotency fingerprint.
+// RejectMissing and Region are not part of the idempotency fingerprint.
+// Empty Region skips the region check.
 type DeleteVPC struct {
-	VPC           VPCID `json:"vpc"`
-	RejectMissing bool  `json:"-"`
+	VPC           VPCID  `json:"vpc"`
+	RejectMissing bool   `json:"-"`
+	Region        string `json:"-"`
 }
 
 // CreateSubnet is the request body of a subnet create.
@@ -156,9 +158,12 @@ type CreateSubnet struct {
 }
 
 // DeleteSubnet names the subnet to remove.
+// RejectMissing, VPC, and Region are not part of the idempotency fingerprint.
 type DeleteSubnet struct {
 	Subnet        SubnetID `json:"subnet"`
 	RejectMissing bool     `json:"-"`
+	VPC           VPCID    `json:"-"`
+	Region        string   `json:"-"`
 }
 
 // CreateSecurityGroup is the request body of a security group create.
@@ -176,9 +181,12 @@ type CreateSecurityGroup struct {
 }
 
 // DeleteSecurityGroup names the group to remove.
+// RejectMissing, VPC, and Region are not part of the idempotency fingerprint.
 type DeleteSecurityGroup struct {
 	Group         SecurityGroupID `json:"group"`
 	RejectMissing bool            `json:"-"`
+	VPC           VPCID           `json:"-"`
+	Region        string          `json:"-"`
 }
 
 // AuthorizeRules adds rules to a group. Rules are canonical before the call.
@@ -201,9 +209,11 @@ type AllocateElasticIP struct {
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
+// RejectMissing and Region are not part of the idempotency fingerprint.
 type ReleaseElasticIP struct {
 	ElasticIP     ElasticIPID `json:"elastic_ip"`
 	RejectMissing bool        `json:"-"`
+	Region        string      `json:"-"`
 }
 
 // AssociateElasticIP binds an elastic IP to a private address.
@@ -214,11 +224,12 @@ type AssociateElasticIP struct {
 }
 
 // DisassociateElasticIP clears an association.
-// AllowMissing rejects creation of a missing address. Both flags stay out of the fingerprint.
+// AllowMissing rejects creation of a missing address. The flags and Region stay out of the fingerprint.
 type DisassociateElasticIP struct {
 	ElasticIP     ElasticIPID `json:"elastic_ip"`
 	RejectMissing bool        `json:"-"`
 	AllowMissing  bool        `json:"-"`
+	Region        string      `json:"-"`
 }
 
 // OperationType is the RPC name that accepted the operation.

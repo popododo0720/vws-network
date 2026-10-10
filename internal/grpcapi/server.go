@@ -121,7 +121,7 @@ func (h *handler) DeleteVpc(ctx context.Context, req *networkv1.DeleteVpcRequest
 		return nil, err
 	}
 	op, err := h.svc.DeleteVPC(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteVPC{
-		VPC: domain.VPCID(n.ID), RejectMissing: !req.GetAllowMissing(),
+		VPC: domain.VPCID(n.ID), RejectMissing: !req.GetAllowMissing(), Region: n.Region,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -266,7 +266,7 @@ func (h *handler) DeleteSubnet(ctx context.Context, req *networkv1.DeleteSubnetR
 		return nil, err
 	}
 	op, err := h.svc.DeleteSubnet(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteSubnet{
-		Subnet: domain.SubnetID(n.ID), RejectMissing: !req.GetAllowMissing(),
+		Subnet: domain.SubnetID(n.ID), RejectMissing: !req.GetAllowMissing(), VPC: domain.VPCID(n.VPC), Region: n.Region,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -417,7 +417,7 @@ func (h *handler) DeleteSecurityGroup(ctx context.Context, req *networkv1.Delete
 		return nil, err
 	}
 	op, err := h.svc.DeleteSecurityGroup(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteSecurityGroup{
-		Group: domain.SecurityGroupID(n.ID), RejectMissing: !req.GetAllowMissing(),
+		Group: domain.SecurityGroupID(n.ID), RejectMissing: !req.GetAllowMissing(), VPC: domain.VPCID(n.VPC), Region: n.Region,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -533,7 +533,7 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 		return validateOp(n.Project, n.ID), nil
 	}
 	op, err := h.svc.DisassociateElasticIP(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DisassociateElasticIP{
-		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(),
+		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -556,7 +556,7 @@ func (h *handler) DeleteAddress(ctx context.Context, req *networkv1.DeleteAddres
 		return nil, err
 	}
 	op, err := h.svc.ReleaseElasticIP(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.ReleaseElasticIP{
-		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(),
+		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), Region: n.Region,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
