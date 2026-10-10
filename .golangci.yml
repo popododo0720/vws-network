@@ -4,6 +4,7 @@ run:
 issues:
   exclude-dirs:
     - gen
+    - third_party
 
 linters:
   enable:
