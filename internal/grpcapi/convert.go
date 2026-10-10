@@ -201,13 +201,6 @@ func callDry(project, requestID, resourceID string, dry bool) domain.Call {
 	return domain.Call{Project: domain.ProjectID(project), Key: domain.IdempotencyKey(key), DryRun: dry}
 }
 
-func rejectText(labels map[string]string, description string) error {
-	if description != "" || len(labels) > 0 {
-		return invalidSpec("labels and description are not stored")
-	}
-	return nil
-}
-
 func rejectEtag(etag string) error {
 	if etag != "" {
 		return withInfo(codes.Aborted, "etag does not match", "ETAG_MISMATCH")
@@ -220,6 +213,20 @@ func maskPaths(mask *fieldmaskpb.FieldMask) []string {
 		return []string{"spec", "labels"}
 	}
 	return mask.GetPaths()
+}
+
+// maskSelects reports whether path, a child of path, or the whole spec replaces field.
+// field "labels" is not selected by "spec".
+func maskSelects(mask *fieldmaskpb.FieldMask, field string) bool {
+	for _, path := range maskPaths(mask) {
+		if path == field || strings.HasPrefix(path, field+".") {
+			return true
+		}
+		if path == "spec" && strings.HasPrefix(field, "spec.") {
+			return true
+		}
+	}
+	return false
 }
 
 func maskTouches(mask *fieldmaskpb.FieldMask, paths ...string) bool {
@@ -438,7 +445,8 @@ func statusInfo(de *domain.Error, requestID string) (codes.Code, string) {
 func toVPC(project string, v domain.VPC) *networkv1.Vpc {
 	return &networkv1.Vpc{
 		Name:   vpcName(project, v.Region, string(v.ID)),
-		Spec:   &networkv1.VpcSpec{Ipv4Cidr: v.CIDR.String()},
+		Labels: protoLabels(v.Labels),
+		Spec:   &networkv1.VpcSpec{Ipv4Cidr: v.CIDR.String(), Description: v.Description},
 		Status: &networkv1.VpcStatus{Observed: observed(v.Status)},
 	}
 }
@@ -446,7 +454,8 @@ func toVPC(project string, v domain.VPC) *networkv1.Vpc {
 func toSubnet(project string, s domain.Subnet) *networkv1.Subnet {
 	return &networkv1.Subnet{
 		Name:   subnetName(project, s.Region, string(s.VPC), string(s.ID)),
-		Spec:   &networkv1.SubnetSpec{Zone: s.Zone, Ipv4Cidr: s.CIDR.String()},
+		Labels: protoLabels(s.Labels),
+		Spec:   &networkv1.SubnetSpec{Zone: s.Zone, Ipv4Cidr: s.CIDR.String(), Description: s.Description},
 		Status: &networkv1.SubnetStatus{Observed: observed(s.Status)},
 	}
 }
@@ -454,7 +463,8 @@ func toSubnet(project string, s domain.Subnet) *networkv1.Subnet {
 func toGroup(project string, g domain.SecurityGroup) *networkv1.SecurityGroup {
 	out := &networkv1.SecurityGroup{
 		Name:   groupName(project, g.Region, string(g.VPC), string(g.ID)),
-		Spec:   &networkv1.SecurityGroupSpec{},
+		Labels: protoLabels(g.Labels),
+		Spec:   &networkv1.SecurityGroupSpec{Description: g.Description},
 		Status: &networkv1.SecurityGroupStatus{Observed: observed(g.Status)},
 	}
 	for _, rule := range g.Rules {
@@ -469,8 +479,9 @@ func toAddress(project, region string, e domain.ElasticIP) *networkv1.Address {
 		use = region
 	}
 	return &networkv1.Address{
-		Name: addressName(project, use, string(e.ID)),
-		Spec: &networkv1.AddressSpec{IpVersion: networkv1.IpVersion_IP_VERSION_IPV4},
+		Name:   addressName(project, use, string(e.ID)),
+		Labels: protoLabels(e.Labels),
+		Spec:   &networkv1.AddressSpec{IpVersion: networkv1.IpVersion_IP_VERSION_IPV4},
 		Status: &networkv1.AddressStatus{
 			Observed: observed(e.Status),
 			Ipv4:     e.Address.String(),
@@ -503,6 +514,17 @@ func toRule(project, region, vpc string, r domain.Rule) *networkv1.SecurityGroup
 func ruleID(r domain.Rule) string {
 	sum := sha256.Sum256([]byte(r.Identity()))
 	return "r" + hex.EncodeToString(sum[:8])
+}
+
+func protoLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func observed(s domain.Status) *commonv1.ObservedState {

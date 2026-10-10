@@ -60,6 +60,7 @@ func (h *handler) CreateVpc(ctx context.Context, req *networkv1.CreateVpcRequest
 	}
 	op, err := h.svc.CreateVPC(ctx, callDry(project, req.GetRequestId(), req.GetVpcId(), req.GetValidateOnly()), domain.CreateVPC{
 		CIDR: cidr, ID: domain.VPCID(req.GetVpcId()), Region: region,
+		Text: resourceText(req.GetVpc().GetSpec().GetDescription(), req.GetVpc().GetLabels(), false, false),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -81,18 +82,20 @@ func (h *handler) UpdateVpc(ctx context.Context, req *networkv1.UpdateVpcRequest
 	if err != nil {
 		return nil, err
 	}
-	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.ipv4_cidr")
+	if err := rejectEtag(req.GetVpc().GetEtag()); err != nil {
+		return nil, err
+	}
+	touch := maskSelects(req.GetUpdateMask(), "spec.ipv4_cidr")
 	var cidr netip.Prefix
 	if touch {
 		cidr, err = vpcSpec(req.GetVpc())
 		if err != nil {
 			return nil, err
 		}
-	} else if err := rejectResource(req.GetVpc().GetLabels(), req.GetVpc().GetSpec().GetDescription(), req.GetVpc().GetEtag()); err != nil {
-		return nil, err
 	}
 	op, err := h.svc.UpdateVPC(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateVPC{
 		CIDR: cidr, ID: domain.VPCID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
+		Text: maskedText(req.GetUpdateMask(), req.GetVpc().GetSpec().GetDescription(), req.GetVpc().GetLabels()),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -205,6 +208,7 @@ func (h *handler) CreateSubnet(ctx context.Context, req *networkv1.CreateSubnetR
 	}
 	op, err := h.svc.CreateSubnet(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSubnetId(), req.GetValidateOnly()), domain.CreateSubnet{
 		VPC: domain.VPCID(parent.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(req.GetSubnetId()), Region: parent.Region,
+		Text: resourceText(req.GetSubnet().GetSpec().GetDescription(), req.GetSubnet().GetLabels(), false, false),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -226,7 +230,10 @@ func (h *handler) UpdateSubnet(ctx context.Context, req *networkv1.UpdateSubnetR
 	if err != nil {
 		return nil, err
 	}
-	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.zone", "spec.ipv4_cidr")
+	if err := rejectEtag(req.GetSubnet().GetEtag()); err != nil {
+		return nil, err
+	}
+	touch := maskSelects(req.GetUpdateMask(), "spec.zone") || maskSelects(req.GetUpdateMask(), "spec.ipv4_cidr")
 	var cidr netip.Prefix
 	var zone string
 	if touch {
@@ -234,11 +241,10 @@ func (h *handler) UpdateSubnet(ctx context.Context, req *networkv1.UpdateSubnetR
 		if err != nil {
 			return nil, err
 		}
-	} else if err := rejectResource(req.GetSubnet().GetLabels(), req.GetSubnet().GetSpec().GetDescription(), req.GetSubnet().GetEtag()); err != nil {
-		return nil, err
 	}
 	op, err := h.svc.UpdateSubnet(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSubnet{
 		VPC: domain.VPCID(n.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
+		Text: maskedText(req.GetUpdateMask(), req.GetSubnet().GetSpec().GetDescription(), req.GetSubnet().GetLabels()),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -351,6 +357,7 @@ func (h *handler) CreateSecurityGroup(ctx context.Context, req *networkv1.Create
 	op, err := h.svc.CreateSecurityGroup(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSecurityGroupId(), req.GetValidateOnly()), domain.CreateSecurityGroup{
 		VPC: domain.VPCID(parent.VPC), Name: req.GetSecurityGroupId(), ID: domain.SecurityGroupID(req.GetSecurityGroupId()),
 		Region: parent.Region, Rules: rules, ReplaceRules: true,
+		Text: resourceText(req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetLabels(), false, false),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -372,19 +379,21 @@ func (h *handler) UpdateSecurityGroup(ctx context.Context, req *networkv1.Update
 	if err != nil {
 		return nil, err
 	}
-	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.rules")
+	if err := rejectEtag(req.GetSecurityGroup().GetEtag()); err != nil {
+		return nil, err
+	}
+	touch := maskSelects(req.GetUpdateMask(), "spec.rules")
 	var rules []domain.Rule
 	if touch {
 		rules, err = groupSpec(req.GetSecurityGroup(), n.Project, n.Region, n.VPC)
 		if err != nil {
 			return nil, err
 		}
-	} else if err := rejectResource(req.GetSecurityGroup().GetLabels(), req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetEtag()); err != nil {
-		return nil, err
 	}
 	op, err := h.svc.UpdateSecurityGroup(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSecurityGroup{
 		VPC: domain.VPCID(n.VPC), Name: n.ID, ID: domain.SecurityGroupID(n.ID), Region: n.Region,
 		Rules: rules, ReplaceRules: touch, AllowMissing: req.GetAllowMissing(), KeepRules: !touch,
+		Text: maskedText(req.GetUpdateMask(), req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetLabels()),
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -513,7 +522,10 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 	if err != nil {
 		return nil, err
 	}
-	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.association")
+	if err := rejectEtag(req.GetAddress().GetEtag()); err != nil {
+		return nil, err
+	}
+	touch := maskTouches(req.GetUpdateMask(), "spec")
 	if touch {
 		if err := addressSpec(req.GetAddress()); err != nil {
 			return nil, err
@@ -521,11 +533,15 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 		if req.GetAddress().GetSpec().GetAssociation() != nil {
 			return nil, invalidSpec("association names a compute instance")
 		}
-	} else if err := rejectResource(req.GetAddress().GetLabels(), "", req.GetAddress().GetEtag()); err != nil {
-		return nil, err
+	}
+	setLabels := maskSelects(req.GetUpdateMask(), "labels")
+	var labels map[string]string
+	if setLabels {
+		labels = req.GetAddress().GetLabels()
 	}
 	op, err := h.svc.DisassociateElasticIP(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.DisassociateElasticIP{
 		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region, Keep: !touch,
+		Labels: labels, SetLabels: setLabels,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -621,9 +637,6 @@ func vpcSpec(v *networkv1.Vpc) (netip.Prefix, error) {
 	if v == nil || v.GetSpec() == nil {
 		return netip.Prefix{}, invalidSpec("vpc spec is required")
 	}
-	if err := rejectText(v.GetLabels(), v.GetSpec().GetDescription()); err != nil {
-		return netip.Prefix{}, err
-	}
 	if err := rejectEtag(v.GetEtag()); err != nil {
 		return netip.Prefix{}, err
 	}
@@ -633,9 +646,6 @@ func vpcSpec(v *networkv1.Vpc) (netip.Prefix, error) {
 func subnetSpec(s *networkv1.Subnet) (netip.Prefix, string, error) {
 	if s == nil || s.GetSpec() == nil {
 		return netip.Prefix{}, "", invalidSpec("subnet spec is required")
-	}
-	if err := rejectText(s.GetLabels(), s.GetSpec().GetDescription()); err != nil {
-		return netip.Prefix{}, "", err
 	}
 	if err := rejectEtag(s.GetEtag()); err != nil {
 		return netip.Prefix{}, "", err
@@ -654,9 +664,6 @@ func groupSpec(g *networkv1.SecurityGroup, project, region, vpc string) ([]domai
 	if g == nil || g.GetSpec() == nil {
 		return nil, invalidSpec("security group spec is required")
 	}
-	if err := rejectText(g.GetLabels(), g.GetSpec().GetDescription()); err != nil {
-		return nil, err
-	}
 	if err := rejectEtag(g.GetEtag()); err != nil {
 		return nil, err
 	}
@@ -667,9 +674,6 @@ func addressSpec(a *networkv1.Address) error {
 	if a == nil || a.GetSpec() == nil {
 		return invalidSpec("address spec is required")
 	}
-	if err := rejectText(a.GetLabels(), ""); err != nil {
-		return err
-	}
 	if err := rejectEtag(a.GetEtag()); err != nil {
 		return err
 	}
@@ -679,11 +683,21 @@ func addressSpec(a *networkv1.Address) error {
 	return nil
 }
 
-func rejectResource(labels map[string]string, description, etag string) error {
-	if err := rejectText(labels, description); err != nil {
-		return err
+func resourceText(description string, labels map[string]string, setDescription, setLabels bool) domain.Text {
+	return domain.Text{Description: description, Labels: labels, SetDescription: setDescription, SetLabels: setLabels}
+}
+
+func maskedText(mask *fieldmaskpb.FieldMask, description string, labels map[string]string) domain.Text {
+	setDescription := maskSelects(mask, "spec.description")
+	setLabels := maskSelects(mask, "labels")
+	text := domain.Text{SetDescription: setDescription, SetLabels: setLabels}
+	if setDescription {
+		text.Description = description
 	}
-	return rejectEtag(etag)
+	if setLabels {
+		text.Labels = labels
+	}
+	return text
 }
 
 func checkMask(mask *fieldmaskpb.FieldMask, allowed ...string) error {
