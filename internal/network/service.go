@@ -150,9 +150,18 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
 		return domain.Operation{}, err
 	}
-	id := s.newID("vpc-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("vpc-")
+	}
 	sg := s.newID("sg-")
 	return s.mutate(ctx, c, domain.OpCreateVPC, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if v, ok := st.VPCs[domain.VPCID(id)]; ok {
+			if v.CIDR == r.CIDR && v.Region == r.Region && (v.Status == domain.StatusPending || v.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "vpc id already exists"}
+		}
 		return true, st.CreateVPC(domain.VPCID(id), domain.SecurityGroupID(sg), r)
 	})
 }
@@ -163,6 +172,9 @@ func (s *Service) DeleteVPC(ctx context.Context, c domain.Call, r domain.DeleteV
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteVPC, string(r.VPC), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if _, ok := st.VPCs[r.VPC]; !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
+		}
 		return st.DeleteVPC(r)
 	})
 }
@@ -172,8 +184,17 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 	if r.VPC == "" || r.Zone == "" || !r.CIDR.IsValid() {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
-	id := s.newID("subnet-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("subnet-")
+	}
 	return s.mutate(ctx, c, domain.OpCreateSubnet, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if sub, ok := st.Subnets[domain.SubnetID(id)]; ok {
+			if sub.VPC == r.VPC && sub.CIDR == r.CIDR && sub.Zone == r.Zone && sub.Region == r.Region && (sub.Status == domain.StatusPending || sub.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "subnet id already exists"}
+		}
 		return true, st.CreateSubnet(domain.SubnetID(id), r)
 	})
 }
@@ -184,6 +205,9 @@ func (s *Service) DeleteSubnet(ctx context.Context, c domain.Call, r domain.Dele
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteSubnet, string(r.Subnet), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if _, ok := st.Subnets[r.Subnet]; !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+		}
 		return st.DeleteSubnet(r)
 	})
 }
@@ -193,9 +217,36 @@ func (s *Service) CreateSecurityGroup(ctx context.Context, c domain.Call, r doma
 	if r.VPC == "" || r.Name == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group vpc and name are required"}
 	}
-	id := s.newID("sg-")
+	var rules []domain.Rule
+	if len(r.Rules) > 0 {
+		canon, err := domain.CanonicalRules(r.Rules)
+		if err != nil {
+			return domain.Operation{}, err
+		}
+		r.Rules = canon
+		rules = canon
+	}
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("sg-")
+	}
 	return s.mutate(ctx, c, domain.OpCreateSecurityGroup, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
-		return true, st.CreateSecurityGroup(domain.SecurityGroupID(id), r)
+		if g, ok := st.Groups[domain.SecurityGroupID(id)]; ok {
+			if g.VPC == r.VPC && g.Name == r.Name && g.Region == r.Region && sameRules(g.Rules, rules) && (g.Status == domain.StatusPending || g.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "security group id already exists"}
+		}
+		if err := st.CreateSecurityGroup(domain.SecurityGroupID(id), r); err != nil {
+			return false, err
+		}
+		if len(rules) == 0 {
+			return true, nil
+		}
+		if _, err := st.RevokeRules(domain.RevokeRules{Group: domain.SecurityGroupID(id), Rules: []domain.Rule{domain.DefaultEgress()}}); err != nil {
+			return false, err
+		}
+		return true, st.AuthorizeRules(domain.AuthorizeRules{Group: domain.SecurityGroupID(id), Rules: rules})
 	})
 }
 
@@ -205,6 +256,9 @@ func (s *Service) DeleteSecurityGroup(ctx context.Context, c domain.Call, r doma
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteSecurityGroup, string(r.Group), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if _, ok := st.Groups[r.Group]; !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
+		}
 		return st.DeleteSecurityGroup(r)
 	})
 }
@@ -244,8 +298,17 @@ func (s *Service) AllocateElasticIP(ctx context.Context, c domain.Call, r domain
 	if r.VPC == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
-	id := s.newID("eip-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("eip-")
+	}
 	return s.mutate(ctx, c, domain.OpAllocateElasticIP, id, r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
+		if e, ok := st.ElasticIPs[domain.ElasticIPID(id)]; ok {
+			if e.VPC == r.VPC && e.Region == r.Region && (e.Status == domain.StatusPending || e.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "elastic ip id already exists"}
+		}
 		return true, st.AllocateElasticIP(domain.ElasticIPID(id), r, s.pool, taken)
 	})
 }
@@ -256,6 +319,9 @@ func (s *Service) ReleaseElasticIP(ctx context.Context, c domain.Call, r domain.
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpReleaseElasticIP, string(r.ElasticIP), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if _, ok := st.ElasticIPs[r.ElasticIP]; !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+		}
 		return st.ReleaseElasticIP(r)
 	})
 }
@@ -505,6 +571,22 @@ func (s *Service) nudge() {
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+func sameRules(got, want []domain.Rule) bool {
+	if len(want) == 0 {
+		return len(got) == 1 && got[0] == domain.DefaultEgress()
+	}
+	canon, err := domain.CanonicalRules(got)
+	if err != nil || len(canon) != len(want) {
+		return false
+	}
+	for i := range canon {
+		if canon[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func fingerprint(typ domain.OperationType, req any) ([32]byte, error) {

@@ -83,9 +83,9 @@ func (s *State) CreateVPC(id VPCID, sg SecurityGroupID, r CreateVPC) error {
 			return conflict("vpc cidr contains an elastic ip")
 		}
 	}
-	s.VPCs[id] = VPC{ID: id, CIDR: r.CIDR, DefaultGroup: sg, Status: StatusPending}
+	s.VPCs[id] = VPC{ID: id, CIDR: r.CIDR, DefaultGroup: sg, Region: r.Region, Status: StatusPending}
 	s.Groups[sg] = SecurityGroup{
-		ID: sg, VPC: id, Name: "default", Default: true,
+		ID: sg, VPC: id, Name: "default", Default: true, Region: r.Region,
 		Rules:  []Rule{DefaultEgress()},
 		Status: StatusPending,
 	}
@@ -119,7 +119,7 @@ func (s *State) CreateSubnet(id SubnetID, r CreateSubnet) error {
 			return conflict("subnet cidr overlaps an existing subnet")
 		}
 	}
-	s.Subnets[id] = Subnet{ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Status: StatusPending}
+	s.Subnets[id] = Subnet{ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Region: r.Region, Status: StatusPending}
 	return nil
 }
 
@@ -148,7 +148,7 @@ func (s *State) CreateSecurityGroup(id SecurityGroupID, r CreateSecurityGroup) e
 		}
 	}
 	s.Groups[id] = SecurityGroup{
-		ID: id, VPC: r.VPC, Name: r.Name,
+		ID: id, VPC: r.VPC, Name: r.Name, Region: r.Region,
 		Rules:  []Rule{DefaultEgress()},
 		Status: StatusPending,
 	}
@@ -272,7 +272,7 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if !ok {
 		return exhausted("elastic ip pool is exhausted")
 	}
-	s.ElasticIPs[id] = ElasticIP{ID: id, VPC: r.VPC, Address: addr, Status: StatusPending}
+	s.ElasticIPs[id] = ElasticIP{ID: id, VPC: r.VPC, Address: addr, Region: r.Region, Status: StatusPending}
 	return nil
 }
 

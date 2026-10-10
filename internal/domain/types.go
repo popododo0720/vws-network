@@ -49,10 +49,12 @@ const (
 )
 
 // VPC is one network. CIDR is immutable. DefaultGroup lives exactly as long as the VPC.
+// Region is the API name segment. Empty means the caller did not supply one.
 type VPC struct {
 	ID           VPCID
 	CIDR         netip.Prefix
 	DefaultGroup SecurityGroupID
+	Region       string
 	Status       Status
 }
 
@@ -62,6 +64,7 @@ type Subnet struct {
 	VPC    VPCID
 	CIDR   netip.Prefix
 	Zone   string
+	Region string
 	Status Status
 }
 
@@ -106,6 +109,7 @@ type SecurityGroup struct {
 	VPC      VPCID
 	Name     string
 	Default  bool
+	Region   string
 	Rules    []Rule
 	revoking []Rule
 	Status   Status
@@ -120,41 +124,55 @@ type ElasticIP struct {
 	Address   netip.Addr
 	Private   netip.Addr
 	Subnet    SubnetID
+	Region    string
 	detaching []netip.Addr
 	Status    Status
 }
 
 // CreateVPC is the request body of a VPC create.
+// ID and Region are set by the API. Empty ID means the service mints one.
 type CreateVPC struct {
-	CIDR netip.Prefix `json:"cidr"`
+	CIDR   netip.Prefix `json:"cidr"`
+	ID     VPCID        `json:"id,omitempty"`
+	Region string       `json:"region,omitempty"`
 }
 
 // DeleteVPC names the VPC to remove.
+// RejectMissing is not part of the idempotency fingerprint.
 type DeleteVPC struct {
-	VPC VPCID `json:"vpc"`
+	VPC           VPCID `json:"vpc"`
+	RejectMissing bool  `json:"-"`
 }
 
 // CreateSubnet is the request body of a subnet create.
 type CreateSubnet struct {
-	VPC  VPCID        `json:"vpc"`
-	CIDR netip.Prefix `json:"cidr"`
-	Zone string       `json:"zone"`
+	VPC    VPCID        `json:"vpc"`
+	CIDR   netip.Prefix `json:"cidr"`
+	Zone   string       `json:"zone"`
+	ID     SubnetID     `json:"id,omitempty"`
+	Region string       `json:"region,omitempty"`
 }
 
 // DeleteSubnet names the subnet to remove.
 type DeleteSubnet struct {
-	Subnet SubnetID `json:"subnet"`
+	Subnet        SubnetID `json:"subnet"`
+	RejectMissing bool     `json:"-"`
 }
 
 // CreateSecurityGroup is the request body of a security group create.
+// Rules, when set, replace the starting egress rule in the same commit.
 type CreateSecurityGroup struct {
-	VPC  VPCID  `json:"vpc"`
-	Name string `json:"name"`
+	VPC    VPCID           `json:"vpc"`
+	Name   string          `json:"name"`
+	ID     SecurityGroupID `json:"id,omitempty"`
+	Region string          `json:"region,omitempty"`
+	Rules  []Rule          `json:"rules,omitempty"`
 }
 
 // DeleteSecurityGroup names the group to remove.
 type DeleteSecurityGroup struct {
-	Group SecurityGroupID `json:"group"`
+	Group         SecurityGroupID `json:"group"`
+	RejectMissing bool            `json:"-"`
 }
 
 // AuthorizeRules adds rules to a group. Rules are canonical before the call.
@@ -171,12 +189,15 @@ type RevokeRules struct {
 
 // AllocateElasticIP reserves one pool address in a VPC.
 type AllocateElasticIP struct {
-	VPC VPCID `json:"vpc"`
+	VPC    VPCID       `json:"vpc"`
+	ID     ElasticIPID `json:"id,omitempty"`
+	Region string      `json:"region,omitempty"`
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
 type ReleaseElasticIP struct {
-	ElasticIP ElasticIPID `json:"elastic_ip"`
+	ElasticIP     ElasticIPID `json:"elastic_ip"`
+	RejectMissing bool        `json:"-"`
 }
 
 // AssociateElasticIP binds an elastic IP to a private address.
