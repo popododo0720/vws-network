@@ -413,7 +413,7 @@ func TestMarshalStateRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(s, got) {
 		t.Fatalf("round trip\n got %#v\nwant %#v", got, s)
 	}
-	if _, err := UnmarshalState([]byte(`{"v":2}`)); err == nil {
+	if _, err := UnmarshalState([]byte(`{"v":3}`)); err == nil {
 		t.Fatal("future version was accepted")
 	}
 }
@@ -434,6 +434,171 @@ func TestPlanKindKeepsSiblingID(t *testing.T) {
 	if s.VPCs["app"].Status != StatusPending || s.Subnets["app"].Status != StatusFailed {
 		t.Fatalf("vpc %d subnet %d", s.VPCs["app"].Status, s.Subnets["app"].Status)
 	}
+}
+
+func TestLabelsRoundTrip(t *testing.T) {
+	labels := map[string]string{"vws-fingerprint": "fp-1", "team": "net"}
+	var s State
+	if err := s.CreateVPC("app", "sg-1", CreateVPC{
+		CIDR: mustPrefix(t, "10.0.0.0/16"), Region: "r1",
+		Text: Text{Description: "edge", Labels: labels},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	labels["vws-fingerprint"] = "mutated"
+	vpc := s.VPCs["app"]
+	if vpc.Description != "edge" || vpc.Labels["vws-fingerprint"] != "fp-1" || vpc.Labels["team"] != "net" {
+		t.Fatalf("vpc text %+v", vpc)
+	}
+	if g := s.Groups["sg-1"]; g.Description != "" || len(g.Labels) != 0 {
+		t.Fatalf("default group copied vpc text %+v", g)
+	}
+	if err := s.CreateSubnet("web", CreateSubnet{
+		VPC: "app", CIDR: mustPrefix(t, "10.0.1.0/24"), Zone: "az1",
+		Text: Text{Description: "web tier", Labels: map[string]string{"vws-fingerprint": "sub"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSecurityGroup("sg-web", CreateSecurityGroup{
+		VPC: "app", Name: "web", Text: Text{Description: "ssh", Labels: map[string]string{"role": "web"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AllocateElasticIP("eip-1", AllocateElasticIP{
+		VPC: "app", Labels: map[string]string{"vws-fingerprint": "addr"},
+	}, mustPrefix(t, "198.51.100.0/24"), func(netip.Addr) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+
+	before := s.Clone()
+	err := s.CreateVPC("other", "sg-2", CreateVPC{CIDR: mustPrefix(t, "10.1.0.0/16"), Text: Text{Labels: map[string]string{"Bad": "x"}}})
+	if kindOf(err) != Invalid || !reflect.DeepEqual(s, before) {
+		t.Fatalf("bad label err %v mutated %v", err, !reflect.DeepEqual(s, before))
+	}
+	tooMany := map[string]string{}
+	for i := 0; i < 65; i++ {
+		tooMany[labelKey(i)] = "v"
+	}
+	if kindOf(CheckLabels(tooMany)) != Invalid {
+		t.Fatal("65 labels accepted")
+	}
+	okLabels := map[string]string{}
+	for i := 0; i < 64; i++ {
+		okLabels[labelKey(i)] = "v"
+	}
+	if err := CheckLabels(okLabels); err != nil {
+		t.Fatal(err)
+	}
+	if kindOf(CheckLabels(map[string]string{"vws-fingerprint": strings.Repeat("a", 64)})) != Invalid {
+		t.Fatal("long value accepted")
+	}
+	if kindOf(CheckLabels(map[string]string{"vws-fingerprint": "a\nb"})) != Invalid {
+		t.Fatal("control character accepted")
+	}
+	if kindOf(CheckDescription(strings.Repeat("a", 1025))) != Invalid {
+		t.Fatal("long description accepted")
+	}
+	if err := CheckDescription(strings.Repeat("a", 1024)); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := s.ApplyVPCText("app", CreateVPC{Text: Text{SetDescription: true, Description: "edge-2", SetLabels: true}})
+	if err != nil || !changed || s.VPCs["app"].Description != "edge-2" || len(s.VPCs["app"].Labels) != 0 {
+		t.Fatalf("clear labels changed %v vpc %+v err %v", changed, s.VPCs["app"], err)
+	}
+	if s.VPCs["app"].CIDR != mustPrefix(t, "10.0.0.0/16") {
+		t.Fatal("text update changed cidr")
+	}
+	changed, err = s.ApplySubnetText("web", CreateSubnet{Text: Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "sub-2"}}})
+	if err != nil || !changed || s.Subnets["web"].Description != "web tier" || s.Subnets["web"].Labels["vws-fingerprint"] != "sub-2" {
+		t.Fatalf("subnet text %+v err %v", s.Subnets["web"], err)
+	}
+	changed, err = s.ApplyGroupText("sg-web", CreateSecurityGroup{Text: Text{SetDescription: true, Description: "ssh-2"}})
+	if err != nil || !changed || s.Groups["sg-web"].Description != "ssh-2" || s.Groups["sg-web"].Labels["role"] != "web" {
+		t.Fatalf("group text %+v err %v", s.Groups["sg-web"], err)
+	}
+	changed, err = s.ApplyAddressText("eip-1", map[string]string{"vws-fingerprint": "addr-2"}, true)
+	if err != nil || !changed || s.ElasticIPs["eip-1"].Labels["vws-fingerprint"] != "addr-2" {
+		t.Fatalf("address text %+v err %v", s.ElasticIPs["eip-1"], err)
+	}
+	changed, err = s.ApplyVPCText("app", CreateVPC{Text: Text{SetDescription: true, Description: "edge-2"}})
+	if err != nil || changed {
+		t.Fatalf("identical text changed %v err %v", changed, err)
+	}
+
+	blob, err := MarshalState(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"v":2`) || !strings.Contains(string(blob), `"vws-fingerprint":"sub-2"`) {
+		t.Fatalf("document %s", blob)
+	}
+	got, err := UnmarshalState(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.VPCs["app"].Description != "edge-2" || len(got.VPCs["app"].Labels) != 0 || got.Subnets["web"].Labels["vws-fingerprint"] != "sub-2" || got.Groups["sg-web"].Description != "ssh-2" || got.ElasticIPs["eip-1"].Labels["vws-fingerprint"] != "addr-2" {
+		t.Fatalf("round trip %+v", got)
+	}
+	legacy, err := UnmarshalState([]byte(`{"v":1,"vpcs":[{"id":"old","cidr":"10.8.0.0/16","default_group":"sg-old","region":"r1","status":1}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := legacy.VPCs["old"]
+	if old.CIDR != mustPrefix(t, "10.8.0.0/16") || old.Region != "r1" || old.Description != "" || len(old.Labels) != 0 {
+		t.Fatalf("v1 document %+v", old)
+	}
+}
+
+func TestEmptyLabelIsADistinctEntry(t *testing.T) {
+	if SameLabels(map[string]string{"pending": ""}, map[string]string{"vws-fingerprint": "fp-2"}) {
+		t.Fatal("a missing key matched an empty value")
+	}
+	if !SameLabels(nil, map[string]string{}) {
+		t.Fatal("nil and empty labels differ")
+	}
+	var s State
+	if err := s.CreateVPC("app", "sg-1", CreateVPC{
+		CIDR: mustPrefix(t, "10.0.0.0/16"),
+		Text: Text{Labels: map[string]string{"pending": ""}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := s.ApplyVPCText("app", CreateVPC{Text: Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "fp-2"}}})
+	if err != nil || !changed || s.VPCs["app"].Labels["vws-fingerprint"] != "fp-2" || len(s.VPCs["app"].Labels) != 1 {
+		t.Fatalf("changed %v vpc %+v err %v", changed, s.VPCs["app"], err)
+	}
+	v := s.VPCs["app"]
+	v.Status = StatusDeleting
+	s.VPCs["app"] = v
+	changed, err = s.ApplyVPCText("app", CreateVPC{Text: Text{SetLabels: true, Labels: map[string]string{"vws-fingerprint": "fp-2"}}})
+	if err != nil || changed {
+		t.Fatalf("unchanged text on a deleting vpc changed %v err %v", changed, err)
+	}
+	_, err = s.ApplyVPCText("app", CreateVPC{Text: Text{SetDescription: true, Description: "later"}})
+	if kindOf(err) != Precondition || s.VPCs["app"].Description != "" {
+		t.Fatalf("deleting vpc accepted a new description: %v %+v", err, s.VPCs["app"])
+	}
+	other := s.Clone()
+	other.VPCs["app"] = VPC{
+		ID: "app", CIDR: v.CIDR, DefaultGroup: v.DefaultGroup, Status: StatusDeleting,
+		Description: "stored", Labels: map[string]string{"vws-fingerprint": "other"},
+	}
+	if !s.SameWork(other) || !s.TextOnly(other) {
+		t.Fatal("text changed the dataplane comparison")
+	}
+	if s.TextOnly(s.Clone()) {
+		t.Fatal("an equal state is text-only")
+	}
+	other.VPCs["app"] = VPC{ID: "app", CIDR: mustPrefix(t, "10.1.0.0/16"), DefaultGroup: v.DefaultGroup, Status: StatusDeleting}
+	if s.SameWork(other) {
+		t.Fatal("a cidr change compared equal")
+	}
+}
+
+func labelKey(i int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz"
+	return "k" + string(alphabet[i%26]) + strings.Repeat("x", i/26)
 }
 
 func projectWithSubnet(t *testing.T) State {
