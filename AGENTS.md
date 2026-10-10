@@ -22,6 +22,7 @@
 | 틀린 클레임 토큰이나 이미 끝난 연산은 상태를 쓰지 않는다. | `repository.commit`, `TestSettleTokenGuardsState` |
 | SQLite 스키마와 `user_version`은 한 트랜잭션이고, `busy_timeout`은 연결에 붙는다. | `openSQLite`, `TestSQLiteSchemaIsOneVersion` |
 | 멱등 지문은 요청의 JSON 이름으로 계산한다. | 요청 구조체의 `json` 태그, `TestRequestJSONNames` |
+| VPC, 서브넷, 보안 그룹의 description과 VPC, 서브넷, 보안 그룹, 주소의 labels는 저장되고 조회되며 `update_mask`로 바뀐다. 라벨은 64개 이하이고 키는 `[a-z][a-z0-9_-]{0,62}`이며 값은 63바이트 이하의 제어 문자가 없는 UTF-8이다. description은 1024바이트 이하다. 프로젝트 id는 리소스 id 문법이라 `a`와 계정 번호를 잇는 형식도 받는다. | `domain.CheckLabels`, `domain.CheckDescription`, `(*State).CreateVPC`, `(*State).ApplyVPCText`, `TestLabelsRoundTrip`, `TestSQLiteMigratesV1`, `TestLabelsSurviveReopen`, `TestLabelsIdempotent`, `TestAccountProjectStoresLabels` |
 | 데이터플레인 구현은 가짜 하나이고, 다른 패키지에서 호출할 수 없다. | 비공개 `dataplane`, `fakeDataplane`, `var _ dataplane = (*fakeDataplane)(nil)` |
 | RPC를 추가하면 핸들러를 비워 둘 수 없다. | `TestHandlersOverrideUnimplemented` |
 | VPC, 서브넷, 보안 그룹의 생성, 수정, 삭제 연산 타입 문자열은 RPC 이름과 같다. | `domain.OpCreateVPC`, `domain.OpUpdateVPC`, `domain.OpDeleteVPC`와 같은 상수, `TestOperationTypesAreRPCNames` |

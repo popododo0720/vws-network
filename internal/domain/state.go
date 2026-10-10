@@ -24,18 +24,22 @@ func (s State) Clone() State {
 		ElasticIPs: make(map[ElasticIPID]ElasticIP, len(s.ElasticIPs)),
 	}
 	for id, v := range s.VPCs {
+		v.Labels = copyLabels(v.Labels)
 		out.VPCs[id] = v
 	}
 	for id, sub := range s.Subnets {
+		sub.Labels = copyLabels(sub.Labels)
 		out.Subnets[id] = sub
 	}
 	for id, g := range s.Groups {
 		g.Rules = copyRules(g.Rules)
 		g.revoking = copyRules(g.revoking)
+		g.Labels = copyLabels(g.Labels)
 		out.Groups[id] = g
 	}
 	for id, e := range s.ElasticIPs {
 		e.detaching = copyAddrs(e.detaching)
+		e.Labels = copyLabels(e.Labels)
 		out.ElasticIPs[id] = e
 	}
 	return out
@@ -66,6 +70,9 @@ func (s *State) CreateVPC(id VPCID, sg SecurityGroupID, r CreateVPC) error {
 	if err := CheckVPCCIDR(r.CIDR); err != nil {
 		return err
 	}
+	if err := checkStoredText(r.Text); err != nil {
+		return err
+	}
 	s.init()
 	if _, ok := s.VPCs[id]; ok {
 		return conflict("vpc id already exists")
@@ -83,7 +90,10 @@ func (s *State) CreateVPC(id VPCID, sg SecurityGroupID, r CreateVPC) error {
 			return conflict("vpc cidr contains an elastic ip")
 		}
 	}
-	s.VPCs[id] = VPC{ID: id, CIDR: r.CIDR, DefaultGroup: sg, Region: r.Region, Status: StatusPending}
+	s.VPCs[id] = VPC{
+		ID: id, CIDR: r.CIDR, DefaultGroup: sg, Region: r.Region, Status: StatusPending,
+		Description: r.Description, Labels: copyLabels(r.Labels),
+	}
 	s.Groups[sg] = SecurityGroup{
 		ID: sg, VPC: id, Name: "default", Default: true, Region: r.Region,
 		Rules:  []Rule{DefaultEgress()},
@@ -99,6 +109,9 @@ func (s *State) CreateSubnet(id SubnetID, r CreateSubnet) error {
 	}
 	if r.Zone == "" || len(r.Zone) > 64 {
 		return invalid("availability zone is required")
+	}
+	if err := checkStoredText(r.Text); err != nil {
+		return err
 	}
 	s.init()
 	v, ok := s.VPCs[r.VPC]
@@ -122,7 +135,10 @@ func (s *State) CreateSubnet(id SubnetID, r CreateSubnet) error {
 			return conflict("subnet cidr overlaps an existing subnet")
 		}
 	}
-	s.Subnets[id] = Subnet{ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Region: r.Region, Status: StatusPending}
+	s.Subnets[id] = Subnet{
+		ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Region: r.Region, Status: StatusPending,
+		Description: r.Description, Labels: copyLabels(r.Labels),
+	}
 	return nil
 }
 
@@ -133,6 +149,9 @@ func (s *State) CreateSecurityGroup(id SecurityGroupID, r CreateSecurityGroup) e
 	}
 	if r.Name == "" || len(r.Name) > 255 {
 		return invalid("security group name is required")
+	}
+	if err := checkStoredText(r.Text); err != nil {
+		return err
 	}
 	s.init()
 	v, ok := s.VPCs[r.VPC]
@@ -155,6 +174,7 @@ func (s *State) CreateSecurityGroup(id SecurityGroupID, r CreateSecurityGroup) e
 	}
 	s.Groups[id] = SecurityGroup{
 		ID: id, VPC: r.VPC, Name: r.Name, Region: r.Region,
+		Description: r.Description, Labels: copyLabels(r.Labels),
 		Rules:  []Rule{DefaultEgress()},
 		Status: StatusPending,
 	}
@@ -259,6 +279,9 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if id == "" {
 		return invalid("elastic ip id is required")
 	}
+	if err := CheckLabels(r.Labels); err != nil {
+		return err
+	}
 	s.init()
 	v, ok := s.VPCs[r.VPC]
 	if !ok {
@@ -281,7 +304,10 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if !ok {
 		return exhausted("elastic ip pool is exhausted")
 	}
-	s.ElasticIPs[id] = ElasticIP{ID: id, VPC: r.VPC, Address: addr, Region: r.Region, Status: StatusPending}
+	s.ElasticIPs[id] = ElasticIP{
+		ID: id, VPC: r.VPC, Address: addr, Region: r.Region, Status: StatusPending,
+		Labels: copyLabels(r.Labels),
+	}
 	return nil
 }
 

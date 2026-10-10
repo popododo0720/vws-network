@@ -261,6 +261,227 @@ func TestRequestIDAndUpdateMask(t *testing.T) {
 	}
 }
 
+func TestAccountProjectStoresLabels(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "net.db")
+	svc, err := network.Open(ctx, network.Config{
+		DatabasePath: path,
+		AddressPool:  netip.MustParsePrefix("198.51.100.0/24"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := serve(t, svc)
+	defer conn.Close()
+	vpcs := networkv1.NewVpcServiceClient(conn)
+	subs := networkv1.NewSubnetServiceClient(conn)
+	groups := networkv1.NewSecurityGroupServiceClient(conn)
+	addrs := networkv1.NewAddressServiceClient(conn)
+	ops := longrunningpb.NewOperationsClient(conn)
+	parent := "projects/a1001/regions/r1"
+	key := "55555555-5555-4555-8555-555555555555"
+	vpc := &networkv1.Vpc{
+		Labels: map[string]string{"vws-fingerprint": "fp-1"},
+		Spec:   &networkv1.VpcSpec{Ipv4Cidr: "10.70.0.0/16", Description: "edge"},
+	}
+
+	_, err = vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "bad", RequestId: key,
+		Vpc: &networkv1.Vpc{Labels: map[string]string{"Bad": "x"}, Spec: &networkv1.VpcSpec{Ipv4Cidr: "10.71.0.0/16"}},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("bad label code = %s err %v", status.Code(err), err)
+	}
+	_, err = vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc:        &networkv1.Vpc{Name: parent + "/vpcs/app"},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels.foo"}},
+		RequestId:  "88888888-8888-4888-8888-888888888888",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("labels.foo code = %s err %v", status.Code(err), err)
+	}
+	_, err = vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc: &networkv1.Vpc{
+			Name:   parent + "/vpcs/missing",
+			Labels: map[string]string{"vws-fingerprint": "fp"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		RequestId:  "99999999-9999-4999-8999-999999999999",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("missing vpc code = %s err %v", status.Code(err), err)
+	}
+	op, err := vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "app", RequestId: key, Vpc: vpc,
+	})
+	if err != nil {
+		t.Fatalf("rejected label consumed the request id: %v", err)
+	}
+	replay, err := vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "app", RequestId: key, Vpc: vpc,
+	})
+	if err != nil || replay.GetName() != op.GetName() {
+		t.Fatalf("replay %+v err %v", replay, err)
+	}
+	_, err = vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "app", RequestId: key,
+		Vpc: &networkv1.Vpc{Spec: &networkv1.VpcSpec{Ipv4Cidr: "10.72.0.0/16"}},
+	})
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("request id reuse code = %s", status.Code(err))
+	}
+	waitDone(t, ctx, ops, op.GetName())
+
+	got, err := vpcs.GetVpc(ctx, &networkv1.GetVpcRequest{Name: parent + "/vpcs/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetSpec().GetDescription() != "edge" || got.GetLabels()["vws-fingerprint"] != "fp-1" {
+		t.Fatalf("vpc %+v", got)
+	}
+	page, err := vpcs.ListVpcs(ctx, &networkv1.ListVpcsRequest{Parent: parent})
+	if err != nil || len(page.GetVpcs()) != 1 || page.GetVpcs()[0].GetLabels()["vws-fingerprint"] != "fp-1" {
+		t.Fatalf("list %+v err %v", page, err)
+	}
+
+	upKey := "66666666-6666-4666-8666-666666666666"
+	up, err := vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc: &networkv1.Vpc{
+			Name: parent + "/vpcs/app",
+			Spec: &networkv1.VpcSpec{Description: "edge-2"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.description"}},
+		RequestId:  upKey,
+	})
+	if err != nil || !up.GetDone() {
+		t.Fatalf("description update %+v err %v", up, err)
+	}
+	upReplay, err := vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc: &networkv1.Vpc{
+			Name: parent + "/vpcs/app",
+			Spec: &networkv1.VpcSpec{Description: "edge-2"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.description"}},
+		RequestId:  upKey,
+	})
+	if err != nil || upReplay.GetName() != up.GetName() {
+		t.Fatalf("update replay %+v err %v", upReplay, err)
+	}
+	_, err = vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc:        &networkv1.Vpc{Name: parent + "/vpcs/app", Labels: map[string]string{"vws-fingerprint": "fp-2"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		RequestId:  "77777777-7777-4777-8777-777777777777",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = vpcs.GetVpc(ctx, &networkv1.GetVpcRequest{Name: parent + "/vpcs/app"})
+	if err != nil || got.GetSpec().GetDescription() != "edge-2" || got.GetLabels()["vws-fingerprint"] != "fp-2" || got.GetSpec().GetIpv4Cidr() != "10.70.0.0/16" {
+		t.Fatalf("updated vpc %+v err %v", got, err)
+	}
+
+	if _, err := subs.CreateSubnet(ctx, &networkv1.CreateSubnetRequest{
+		Parent: parent + "/vpcs/app", SubnetId: "web",
+		Subnet: &networkv1.Subnet{
+			Labels: map[string]string{"vws-fingerprint": "sub"},
+			Spec:   &networkv1.SubnetSpec{Zone: "az1", Ipv4Cidr: "10.70.1.0/24", Description: "web"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := subs.GetSubnet(ctx, &networkv1.GetSubnetRequest{Name: parent + "/vpcs/app/subnets/web"})
+	if err != nil || sub.GetSpec().GetDescription() != "web" || sub.GetLabels()["vws-fingerprint"] != "sub" {
+		t.Fatalf("subnet %+v err %v", sub, err)
+	}
+	if _, err := groups.CreateSecurityGroup(ctx, &networkv1.CreateSecurityGroupRequest{
+		Parent: parent + "/vpcs/app", SecurityGroupId: "web",
+		SecurityGroup: &networkv1.SecurityGroup{
+			Labels: map[string]string{"vws-fingerprint": "sg"},
+			Spec:   &networkv1.SecurityGroupSpec{Description: "group"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{
+		SecurityGroup: &networkv1.SecurityGroup{
+			Name:   parent + "/vpcs/app/securityGroups/web",
+			Labels: map[string]string{"vws-fingerprint": "sg-2"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	group, err := groups.GetSecurityGroup(ctx, &networkv1.GetSecurityGroupRequest{Name: parent + "/vpcs/app/securityGroups/web"})
+	if err != nil || group.GetSpec().GetDescription() != "group" || group.GetLabels()["vws-fingerprint"] != "sg-2" {
+		t.Fatalf("group %+v err %v", group, err)
+	}
+	if _, err := svc.AllocateElasticIP(ctx, domain.Call{Project: "a1001", Key: "eip"}, domain.AllocateElasticIP{VPC: "app", ID: "eip", Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addrs.UpdateAddress(ctx, &networkv1.UpdateAddressRequest{
+		Address: &networkv1.Address{
+			Name:   parent + "/addresses/eip",
+			Labels: map[string]string{"vws-fingerprint": "eip"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	addr, err := addrs.GetAddress(ctx, &networkv1.GetAddressRequest{Name: parent + "/addresses/eip"})
+	if err != nil || addr.GetLabels()["vws-fingerprint"] != "eip" {
+		t.Fatalf("address %+v err %v", addr, err)
+	}
+
+	conn.Close()
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = network.Open(ctx, network.Config{DatabasePath: path, AddressPool: netip.MustParsePrefix("198.51.100.0/24")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	conn = serve(t, svc)
+	defer conn.Close()
+	vpcs = networkv1.NewVpcServiceClient(conn)
+	subs = networkv1.NewSubnetServiceClient(conn)
+	groups = networkv1.NewSecurityGroupServiceClient(conn)
+	addrs = networkv1.NewAddressServiceClient(conn)
+	got, err = vpcs.GetVpc(ctx, &networkv1.GetVpcRequest{Name: parent + "/vpcs/app"})
+	if err != nil || got.GetSpec().GetDescription() != "edge-2" || got.GetLabels()["vws-fingerprint"] != "fp-2" {
+		t.Fatalf("reopened vpc %+v err %v", got, err)
+	}
+	sub, err = subs.GetSubnet(ctx, &networkv1.GetSubnetRequest{Name: parent + "/vpcs/app/subnets/web"})
+	if err != nil || sub.GetSpec().GetDescription() != "web" || sub.GetLabels()["vws-fingerprint"] != "sub" {
+		t.Fatalf("reopened subnet %+v err %v", sub, err)
+	}
+	group, err = groups.GetSecurityGroup(ctx, &networkv1.GetSecurityGroupRequest{Name: parent + "/vpcs/app/securityGroups/web"})
+	if err != nil || group.GetSpec().GetDescription() != "group" || group.GetLabels()["vws-fingerprint"] != "sg-2" {
+		t.Fatalf("reopened group %+v err %v", group, err)
+	}
+	addr, err = addrs.GetAddress(ctx, &networkv1.GetAddressRequest{Name: parent + "/addresses/eip"})
+	if err != nil || addr.GetLabels()["vws-fingerprint"] != "eip" {
+		t.Fatalf("reopened address %+v err %v", addr, err)
+	}
+}
+
+func serve(t *testing.T, svc *network.Service) *grpc.ClientConn {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer()
+	Register(gs, svc)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
 func waitDone(t *testing.T, ctx context.Context, ops longrunningpb.OperationsClient, name string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

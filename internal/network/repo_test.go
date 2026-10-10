@@ -2,9 +2,11 @@ package network
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,5 +182,171 @@ func TestSQLiteSchemaIsOneVersion(t *testing.T) {
 	}
 	if timeout != 5000 {
 		t.Fatalf("busy_timeout = %d", timeout)
+	}
+}
+
+func TestSQLiteMigratesV1(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "net.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  state BLOB NOT NULL
+);
+CREATE TABLE operations (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT UNIQUE NOT NULL,
+  project TEXT NOT NULL,
+  type TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  lane TEXT NOT NULL,
+  state INTEGER NOT NULL,
+  err_kind INTEGER NOT NULL DEFAULT 0,
+  err_msg TEXT NOT NULL DEFAULT '',
+  key TEXT NOT NULL,
+  fingerprint BLOB NOT NULL,
+  attempts INTEGER NOT NULL,
+  not_before INTEGER NOT NULL,
+  token TEXT NOT NULL DEFAULT '',
+  UNIQUE (project, key)
+);
+CREATE TABLE addresses (
+  addr TEXT PRIMARY KEY,
+  project TEXT NOT NULL
+);
+`); err != nil {
+		t.Fatal(err)
+	}
+	const legacy = `{"v":1,"vpcs":[{"id":"app","cidr":"10.8.0.0/16","default_group":"sg-1","region":"r1","status":2}]}`
+	if _, err := tx.ExecContext(ctx, `INSERT INTO projects (id, version, state) VALUES (?, ?, ?)`, "a1001", 1, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := openSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.close() })
+	var version int
+	if err := repo.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("user_version = %d", version)
+	}
+	st, _, err := repo.load(ctx, "a1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpc, ok := st.VPCs["app"]
+	if !ok || vpc.CIDR != netip.MustParsePrefix("10.8.0.0/16") || vpc.Region != "r1" || vpc.Description != "" || len(vpc.Labels) != 0 {
+		t.Fatalf("migrated vpc %+v ok %v", vpc, ok)
+	}
+	var blob []byte
+	if err := repo.db.QueryRowContext(ctx, `SELECT state FROM projects WHERE id = ?`, "a1001").Scan(&blob); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"v":2`) {
+		t.Fatalf("document %s", blob)
+	}
+}
+
+func TestSQLiteMigrationRollsBack(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "net.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  state BLOB NOT NULL
+);
+CREATE TABLE operations (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT UNIQUE NOT NULL,
+  project TEXT NOT NULL,
+  type TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  lane TEXT NOT NULL,
+  state INTEGER NOT NULL,
+  err_kind INTEGER NOT NULL DEFAULT 0,
+  err_msg TEXT NOT NULL DEFAULT '',
+  key TEXT NOT NULL,
+  fingerprint BLOB NOT NULL,
+  attempts INTEGER NOT NULL,
+  not_before INTEGER NOT NULL,
+  token TEXT NOT NULL DEFAULT '',
+  UNIQUE (project, key)
+);
+CREATE TABLE addresses (
+  addr TEXT PRIMARY KEY,
+  project TEXT NOT NULL
+);
+`); err != nil {
+		t.Fatal(err)
+	}
+	const legacy = `{"v":1,"vpcs":[{"id":"app","cidr":"10.8.0.0/16","default_group":"sg-1","region":"r1","status":2}]}`
+	if _, err := tx.ExecContext(ctx, `INSERT INTO projects (id, version, state) VALUES (?, ?, ?)`, "a1001", 1, []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO projects (id, version, state) VALUES (?, ?, ?)`, "a1002", 1, []byte(`{"v":9}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := openSQLite(ctx, path); err == nil || !strings.Contains(err.Error(), "a1002") {
+		t.Fatalf("open = %v", err)
+	}
+	db, err = sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("user_version = %d", version)
+	}
+	var blob []byte
+	if err := db.QueryRowContext(ctx, `SELECT state FROM projects WHERE id = ?`, "a1001").Scan(&blob); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"v":1`) {
+		t.Fatalf("document %s", blob)
 	}
 }

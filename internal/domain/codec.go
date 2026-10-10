@@ -5,7 +5,9 @@ import (
 	"net/netip"
 )
 
-const stateVersion = 1
+// stateVersion is the document this process writes. Version 1 is the document
+// from before description and labels. Unmarshal still reads it.
+const stateVersion = 2
 
 // MarshalState encodes State with a versioned document. The JSON names are the
 // storage contract. Renaming a Go field does not change them.
@@ -14,25 +16,26 @@ func MarshalState(s State) ([]byte, error) {
 	for _, v := range s.VPCs {
 		doc.VPCs = append(doc.VPCs, vpcDoc{
 			ID: string(v.ID), CIDR: v.CIDR.String(), DefaultGroup: string(v.DefaultGroup),
-			Region: v.Region, Status: int(v.Status),
+			Region: v.Region, Description: v.Description, Labels: copyLabels(v.Labels), Status: int(v.Status),
 		})
 	}
 	for _, sub := range s.Subnets {
 		doc.Subnets = append(doc.Subnets, subnetDoc{
 			ID: string(sub.ID), VPC: string(sub.VPC), CIDR: sub.CIDR.String(), Zone: sub.Zone,
-			Region: sub.Region, Status: int(sub.Status),
+			Region: sub.Region, Description: sub.Description, Labels: copyLabels(sub.Labels), Status: int(sub.Status),
 		})
 	}
 	for _, g := range s.Groups {
 		doc.Groups = append(doc.Groups, groupDoc{
 			ID: string(g.ID), VPC: string(g.VPC), Name: g.Name, Default: g.Default, Region: g.Region,
+			Description: g.Description, Labels: copyLabels(g.Labels),
 			Rules: encodeRules(g.Rules), Revoking: encodeRules(g.revoking), Status: int(g.Status),
 		})
 	}
 	for _, e := range s.ElasticIPs {
 		item := eipDoc{
 			ID: string(e.ID), VPC: string(e.VPC), Address: e.Address.String(),
-			Subnet: string(e.Subnet), Region: e.Region, Status: int(e.Status),
+			Subnet: string(e.Subnet), Region: e.Region, Labels: copyLabels(e.Labels), Status: int(e.Status),
 		}
 		if e.Private.IsValid() {
 			item.Private = e.Private.String()
@@ -54,7 +57,7 @@ func UnmarshalState(b []byte) (State, error) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return State{}, invalid("state document is corrupt")
 	}
-	if doc.V != stateVersion {
+	if doc.V != 1 && doc.V != stateVersion {
 		return State{}, invalid("state document version is unsupported")
 	}
 	var s State
@@ -64,14 +67,20 @@ func UnmarshalState(b []byte) (State, error) {
 		if err != nil {
 			return State{}, invalid("state document cidr is corrupt")
 		}
-		s.VPCs[VPCID(v.ID)] = VPC{ID: VPCID(v.ID), CIDR: cidr, DefaultGroup: SecurityGroupID(v.DefaultGroup), Region: v.Region, Status: Status(v.Status)}
+		s.VPCs[VPCID(v.ID)] = VPC{
+			ID: VPCID(v.ID), CIDR: cidr, DefaultGroup: SecurityGroupID(v.DefaultGroup), Region: v.Region,
+			Description: v.Description, Labels: copyLabels(v.Labels), Status: Status(v.Status),
+		}
 	}
 	for _, sub := range doc.Subnets {
 		cidr, err := netip.ParsePrefix(sub.CIDR)
 		if err != nil {
 			return State{}, invalid("state document cidr is corrupt")
 		}
-		s.Subnets[SubnetID(sub.ID)] = Subnet{ID: SubnetID(sub.ID), VPC: VPCID(sub.VPC), CIDR: cidr, Zone: sub.Zone, Region: sub.Region, Status: Status(sub.Status)}
+		s.Subnets[SubnetID(sub.ID)] = Subnet{
+			ID: SubnetID(sub.ID), VPC: VPCID(sub.VPC), CIDR: cidr, Zone: sub.Zone, Region: sub.Region,
+			Description: sub.Description, Labels: copyLabels(sub.Labels), Status: Status(sub.Status),
+		}
 	}
 	for _, g := range doc.Groups {
 		rules, err := decodeRules(g.Rules)
@@ -84,6 +93,7 @@ func UnmarshalState(b []byte) (State, error) {
 		}
 		s.Groups[SecurityGroupID(g.ID)] = SecurityGroup{
 			ID: SecurityGroupID(g.ID), VPC: VPCID(g.VPC), Name: g.Name, Default: g.Default, Region: g.Region,
+			Description: g.Description, Labels: copyLabels(g.Labels),
 			Rules: rules, revoking: revoking, Status: Status(g.Status),
 		}
 	}
@@ -92,7 +102,10 @@ func UnmarshalState(b []byte) (State, error) {
 		if err != nil {
 			return State{}, invalid("state document address is corrupt")
 		}
-		item := ElasticIP{ID: ElasticIPID(e.ID), VPC: VPCID(e.VPC), Address: addr, Subnet: SubnetID(e.Subnet), Region: e.Region, Status: Status(e.Status)}
+		item := ElasticIP{
+			ID: ElasticIPID(e.ID), VPC: VPCID(e.VPC), Address: addr, Subnet: SubnetID(e.Subnet), Region: e.Region,
+			Labels: copyLabels(e.Labels), Status: Status(e.Status),
+		}
 		if e.Private != "" {
 			item.Private, err = netip.ParseAddr(e.Private)
 			if err != nil {
@@ -120,42 +133,49 @@ type stateDoc struct {
 }
 
 type vpcDoc struct {
-	ID           string `json:"id"`
-	CIDR         string `json:"cidr"`
-	DefaultGroup string `json:"default_group"`
-	Region       string `json:"region,omitempty"`
-	Status       int    `json:"status"`
+	ID           string            `json:"id"`
+	CIDR         string            `json:"cidr"`
+	DefaultGroup string            `json:"default_group"`
+	Region       string            `json:"region,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Status       int               `json:"status"`
 }
 
 type subnetDoc struct {
-	ID     string `json:"id"`
-	VPC    string `json:"vpc"`
-	CIDR   string `json:"cidr"`
-	Zone   string `json:"zone"`
-	Region string `json:"region,omitempty"`
-	Status int    `json:"status"`
+	ID          string            `json:"id"`
+	VPC         string            `json:"vpc"`
+	CIDR        string            `json:"cidr"`
+	Zone        string            `json:"zone"`
+	Region      string            `json:"region,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Status      int               `json:"status"`
 }
 
 type groupDoc struct {
-	ID       string    `json:"id"`
-	VPC      string    `json:"vpc"`
-	Name     string    `json:"name"`
-	Default  bool      `json:"default"`
-	Region   string    `json:"region,omitempty"`
-	Rules    []ruleDoc `json:"rules,omitempty"`
-	Revoking []ruleDoc `json:"revoking,omitempty"`
-	Status   int       `json:"status"`
+	ID          string            `json:"id"`
+	VPC         string            `json:"vpc"`
+	Name        string            `json:"name"`
+	Default     bool              `json:"default"`
+	Region      string            `json:"region,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Rules       []ruleDoc         `json:"rules,omitempty"`
+	Revoking    []ruleDoc         `json:"revoking,omitempty"`
+	Status      int               `json:"status"`
 }
 
 type eipDoc struct {
-	ID        string   `json:"id"`
-	VPC       string   `json:"vpc"`
-	Address   string   `json:"address"`
-	Private   string   `json:"private,omitempty"`
-	Subnet    string   `json:"subnet,omitempty"`
-	Region    string   `json:"region,omitempty"`
-	Detaching []string `json:"detaching,omitempty"`
-	Status    int      `json:"status"`
+	ID        string            `json:"id"`
+	VPC       string            `json:"vpc"`
+	Address   string            `json:"address"`
+	Private   string            `json:"private,omitempty"`
+	Subnet    string            `json:"subnet,omitempty"`
+	Region    string            `json:"region,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Detaching []string          `json:"detaching,omitempty"`
+	Status    int               `json:"status"`
 }
 
 type ruleDoc struct {

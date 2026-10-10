@@ -52,22 +52,27 @@ const (
 
 // VPC is one network. CIDR is immutable. DefaultGroup lives exactly as long as the VPC.
 // Region is the API name segment. Empty means the caller did not supply one.
+// Description and Labels are stored text. They are not dataplane input.
 type VPC struct {
 	ID           VPCID
 	CIDR         netip.Prefix
 	DefaultGroup SecurityGroupID
 	Region       string
+	Description  string
+	Labels       map[string]string
 	Status       Status
 }
 
 // Subnet is one range inside a VPC. CIDR is immutable. Zone is stored and not a catalog lookup.
 type Subnet struct {
-	ID     SubnetID
-	VPC    VPCID
-	CIDR   netip.Prefix
-	Zone   string
-	Region string
-	Status Status
+	ID          SubnetID
+	VPC         VPCID
+	CIDR        netip.Prefix
+	Zone        string
+	Region      string
+	Description string
+	Labels      map[string]string
+	Status      Status
 }
 
 // Direction is the side of a security group rule.
@@ -107,14 +112,16 @@ type Rule struct {
 // SecurityGroup belongs to one VPC. Name is unique in that VPC.
 // revoking holds rules whose dataplane delete is not yet confirmed.
 type SecurityGroup struct {
-	ID       SecurityGroupID
-	VPC      VPCID
-	Name     string
-	Default  bool
-	Region   string
-	Rules    []Rule
-	revoking []Rule
-	Status   Status
+	ID          SecurityGroupID
+	VPC         VPCID
+	Name        string
+	Default     bool
+	Region      string
+	Description string
+	Labels      map[string]string
+	Rules       []Rule
+	revoking    []Rule
+	Status      Status
 }
 
 // ElasticIP is one address from the pool. Address is fixed at allocation.
@@ -127,8 +134,21 @@ type ElasticIP struct {
 	Private   netip.Addr
 	Subnet    SubnetID
 	Region    string
+	Labels    map[string]string
 	detaching []netip.Addr
 	Status    Status
+}
+
+// Text is the description and labels stored on a resource.
+// SetDescription and SetLabels select the fields an update replaces.
+// A create copies Description and Labels whether or not the flags are set.
+// JSON names are the idempotency fingerprint.
+// Address has no description field; only Labels and SetLabels apply there.
+type Text struct {
+	Description    string            `json:"description,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	SetDescription bool              `json:"set_description,omitempty"`
+	SetLabels      bool              `json:"set_labels,omitempty"`
 }
 
 // CreateVPC is the request body of a VPC create.
@@ -141,6 +161,7 @@ type CreateVPC struct {
 	// Keep leaves the stored spec alone. It is not part of the fingerprint;
 	// the service fingerprints a separate body so an empty CIDR is not marshaled.
 	Keep bool `json:"-"`
+	Text
 }
 
 // DeleteVPC names the VPC to remove.
@@ -160,6 +181,7 @@ type CreateSubnet struct {
 	Region       string       `json:"region,omitempty"`
 	AllowMissing bool         `json:"-"`
 	Keep         bool         `json:"-"`
+	Text
 }
 
 // DeleteSubnet names the subnet to remove.
@@ -185,6 +207,7 @@ type CreateSecurityGroup struct {
 	ReplaceRules bool `json:"-"`
 	// KeepRules leaves stored rules alone. It is part of the fingerprint.
 	KeepRules bool `json:"keep_rules,omitempty"`
+	Text
 }
 
 // DeleteSecurityGroup names the group to remove.
@@ -210,9 +233,10 @@ type RevokeRules struct {
 
 // AllocateElasticIP reserves one pool address in a VPC.
 type AllocateElasticIP struct {
-	VPC    VPCID       `json:"vpc"`
-	ID     ElasticIPID `json:"id,omitempty"`
-	Region string      `json:"region,omitempty"`
+	VPC    VPCID             `json:"vpc"`
+	ID     ElasticIPID       `json:"id,omitempty"`
+	Region string            `json:"region,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
@@ -234,11 +258,13 @@ type AssociateElasticIP struct {
 // AllowMissing rejects creation of a missing address.
 // Keep leaves an existing association alone. Empty Region skips the region check.
 type DisassociateElasticIP struct {
-	ElasticIP     ElasticIPID `json:"elastic_ip"`
-	RejectMissing bool        `json:"reject_missing,omitempty"`
-	AllowMissing  bool        `json:"allow_missing,omitempty"`
-	Region        string      `json:"region,omitempty"`
-	Keep          bool        `json:"keep,omitempty"`
+	ElasticIP     ElasticIPID       `json:"elastic_ip"`
+	RejectMissing bool              `json:"reject_missing,omitempty"`
+	AllowMissing  bool              `json:"allow_missing,omitempty"`
+	Region        string            `json:"region,omitempty"`
+	Keep          bool              `json:"keep,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	SetLabels     bool              `json:"set_labels,omitempty"`
 }
 
 // OperationType is the RPC name that accepted the operation.
