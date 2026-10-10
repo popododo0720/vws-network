@@ -7,14 +7,27 @@ import (
 	"testing"
 )
 
-func TestProtoIsTemporary(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "..", "proto", "vws", "network", "v1", "network.proto"))
+func TestVWSProtoIsReplaced(t *testing.T) {
+	root := filepath.Join("..", "..")
+	if _, err := os.Stat(filepath.Join(root, "proto")); !os.IsNotExist(err) {
+		t.Fatal("proto sources belong in vws-proto")
+	}
+	if _, err := os.Stat(filepath.Join(root, "gen")); !os.IsNotExist(err) {
+		t.Fatal("generated code belongs in vws-proto")
+	}
+	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(b)
-	if !strings.Contains(text, "TODO") || !strings.Contains(strings.ToLower(text), "temporary") {
-		t.Fatal("proto must stay marked temporary until it moves to the shared repository")
+	if !strings.Contains(string(b), "replace github.com/popododo0720/vws-proto => ./third_party/vws-proto") {
+		t.Fatal("go.mod must replace vws-proto with third_party until a tagged release")
+	}
+	mod, err := os.ReadFile(filepath.Join(root, "third_party", "vws-proto", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mod), "module github.com/popododo0720/vws-proto") {
+		t.Fatal("third_party/vws-proto is not the vws-proto module")
 	}
 }
 

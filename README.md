@@ -24,6 +24,6 @@ go test ./...
 
 연산이 `SUCCEEDED`가 되면 가짜 데이터플레인이 그 리소스의 원하는 상태와 같다. 프로세스가 다시 뜨면 `RUNNING`으로 남아 있던 연산을 `PENDING`으로 되돌리고 이어서 수렴시킨다.
 
-`proto/vws/network/v1/network.proto`는 임시로 이 저장소에 있다. 공유 proto 저장소로 옮긴다.
+`third_party/vws-proto`는 `github.com/popododo0720/vws-proto`의 `main` `a1c6084`이다. `go.mod`의 replace가 그 경로를 가리킨다. vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
 배포용 매니페스트는 두지 않는다.

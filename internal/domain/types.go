@@ -132,9 +132,10 @@ type ElasticIP struct {
 // CreateVPC is the request body of a VPC create.
 // ID and Region are set by the API. Empty ID means the service mints one.
 type CreateVPC struct {
-	CIDR   netip.Prefix `json:"cidr"`
-	ID     VPCID        `json:"id,omitempty"`
-	Region string       `json:"region,omitempty"`
+	CIDR         netip.Prefix `json:"cidr"`
+	ID           VPCID        `json:"id,omitempty"`
+	Region       string       `json:"region,omitempty"`
+	AllowMissing bool         `json:"-"`
 }
 
 // DeleteVPC names the VPC to remove.
@@ -146,11 +147,12 @@ type DeleteVPC struct {
 
 // CreateSubnet is the request body of a subnet create.
 type CreateSubnet struct {
-	VPC    VPCID        `json:"vpc"`
-	CIDR   netip.Prefix `json:"cidr"`
-	Zone   string       `json:"zone"`
-	ID     SubnetID     `json:"id,omitempty"`
-	Region string       `json:"region,omitempty"`
+	VPC          VPCID        `json:"vpc"`
+	CIDR         netip.Prefix `json:"cidr"`
+	Zone         string       `json:"zone"`
+	ID           SubnetID     `json:"id,omitempty"`
+	Region       string       `json:"region,omitempty"`
+	AllowMissing bool         `json:"-"`
 }
 
 // DeleteSubnet names the subnet to remove.
@@ -162,11 +164,15 @@ type DeleteSubnet struct {
 // CreateSecurityGroup is the request body of a security group create.
 // Rules, when set, replace the starting egress rule in the same commit.
 type CreateSecurityGroup struct {
-	VPC    VPCID           `json:"vpc"`
-	Name   string          `json:"name"`
-	ID     SecurityGroupID `json:"id,omitempty"`
-	Region string          `json:"region,omitempty"`
-	Rules  []Rule          `json:"rules,omitempty"`
+	VPC          VPCID           `json:"vpc"`
+	Name         string          `json:"name"`
+	ID           SecurityGroupID `json:"id,omitempty"`
+	Region       string          `json:"region,omitempty"`
+	Rules        []Rule          `json:"rules,omitempty"`
+	AllowMissing bool            `json:"-"`
+	// ReplaceRules clears the starting egress rule when Rules is empty.
+	// It is not part of the idempotency fingerprint.
+	ReplaceRules bool `json:"-"`
 }
 
 // DeleteSecurityGroup names the group to remove.
@@ -208,8 +214,11 @@ type AssociateElasticIP struct {
 }
 
 // DisassociateElasticIP clears an association.
+// AllowMissing rejects creation of a missing address. Both flags stay out of the fingerprint.
 type DisassociateElasticIP struct {
-	ElasticIP ElasticIPID `json:"elastic_ip"`
+	ElasticIP     ElasticIPID `json:"elastic_ip"`
+	RejectMissing bool        `json:"-"`
+	AllowMissing  bool        `json:"-"`
 }
 
 // OperationType is the RPC name that accepted the operation.
@@ -217,10 +226,13 @@ type OperationType string
 
 const (
 	OpCreateVPC             OperationType = "CreateVpc"
+	OpUpdateVPC             OperationType = "UpdateVpc"
 	OpDeleteVPC             OperationType = "DeleteVpc"
 	OpCreateSubnet          OperationType = "CreateSubnet"
+	OpUpdateSubnet          OperationType = "UpdateSubnet"
 	OpDeleteSubnet          OperationType = "DeleteSubnet"
 	OpCreateSecurityGroup   OperationType = "CreateSecurityGroup"
+	OpUpdateSecurityGroup   OperationType = "UpdateSecurityGroup"
 	OpDeleteSecurityGroup   OperationType = "DeleteSecurityGroup"
 	OpAuthorizeRules        OperationType = "AuthorizeSecurityGroupRules"
 	OpRevokeRules           OperationType = "RevokeSecurityGroupRules"
@@ -230,13 +242,13 @@ const (
 	OpDisassociateElasticIP OperationType = "DisassociateElasticIp"
 )
 
-// OperationTypes is every mutation RPC name. A test checks each one exists
-// on the generated service.
+// OperationTypes is every stored mutation. VPC, subnet, and security group
+// names match their RPCs. Rule and elastic IP mutations stay inside the service.
 func OperationTypes() []OperationType {
 	return []OperationType{
-		OpCreateVPC, OpDeleteVPC,
-		OpCreateSubnet, OpDeleteSubnet,
-		OpCreateSecurityGroup, OpDeleteSecurityGroup,
+		OpCreateVPC, OpUpdateVPC, OpDeleteVPC,
+		OpCreateSubnet, OpUpdateSubnet, OpDeleteSubnet,
+		OpCreateSecurityGroup, OpUpdateSecurityGroup, OpDeleteSecurityGroup,
 		OpAuthorizeRules, OpRevokeRules,
 		OpAllocateElasticIP, OpReleaseElasticIP,
 		OpAssociateElasticIP, OpDisassociateElasticIP,
