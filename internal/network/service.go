@@ -150,10 +150,55 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
 		return domain.Operation{}, err
 	}
-	id := s.newID("vpc-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("vpc-")
+	}
 	sg := s.newID("sg-")
 	return s.mutate(ctx, c, domain.OpCreateVPC, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if v, ok := st.VPCs[domain.VPCID(id)]; ok {
+			if v.CIDR == r.CIDR && v.Region == r.Region && (v.Status == domain.StatusPending || v.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "vpc id already exists"}
+		}
 		return true, st.CreateVPC(domain.VPCID(id), domain.SecurityGroupID(sg), r)
+	})
+}
+
+// UpdateVPC rejects a CIDR change. An identical CIDR is a succeeded no-op.
+// allow_missing creates the VPC.
+func (s *Service) UpdateVPC(ctx context.Context, c domain.Call, r domain.CreateVPC) (domain.Operation, error) {
+	if r.ID == "" {
+		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
+	}
+	if !r.Keep {
+		if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
+			return domain.Operation{}, err
+		}
+	}
+	sg := s.newID("sg-")
+	body := any(r)
+	if r.Keep {
+		body = keepBody{ID: string(r.ID), Region: r.Region, Keep: true}
+	}
+	return s.mutate(ctx, c, domain.OpUpdateVPC, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if v, ok := st.VPCs[r.ID]; ok {
+			if otherName(v.Region, r.Region, "", "") {
+				return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
+			}
+			if r.Keep || v.CIDR == r.CIDR {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
+		}
+		if r.Keep {
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "vpc spec is required"}
+		}
+		if !r.AllowMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
+		}
+		return true, st.CreateVPC(r.ID, domain.SecurityGroupID(sg), r)
 	})
 }
 
@@ -163,6 +208,13 @@ func (s *Service) DeleteVPC(ctx context.Context, c domain.Call, r domain.DeleteV
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteVPC, string(r.VPC), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		v, ok := st.VPCs[r.VPC]
+		if ok && otherName(v.Region, r.Region, "", "") {
+			return absentAtName(r.RejectMissing, "vpc not found")
+		}
+		if !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
+		}
 		return st.DeleteVPC(r)
 	})
 }
@@ -172,9 +224,53 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 	if r.VPC == "" || r.Zone == "" || !r.CIDR.IsValid() {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
-	id := s.newID("subnet-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("subnet-")
+	}
 	return s.mutate(ctx, c, domain.OpCreateSubnet, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if sub, ok := st.Subnets[domain.SubnetID(id)]; ok {
+			if sub.VPC == r.VPC && sub.CIDR == r.CIDR && sub.Zone == r.Zone && sub.Region == r.Region && (sub.Status == domain.StatusPending || sub.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "subnet id already exists"}
+		}
 		return true, st.CreateSubnet(domain.SubnetID(id), r)
+	})
+}
+
+// UpdateSubnet rejects a CIDR or zone change. An identical spec is a succeeded no-op.
+func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.CreateSubnet) (domain.Operation, error) {
+	if r.ID == "" || r.VPC == "" || (!r.Keep && (r.Zone == "" || !r.CIDR.IsValid())) {
+		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
+	}
+	body := any(r)
+	if r.Keep {
+		body = keepBody{ID: string(r.ID), Region: r.Region, Parent: string(r.VPC), Keep: true}
+	}
+	return s.mutate(ctx, c, domain.OpUpdateSubnet, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if sub, ok := st.Subnets[r.ID]; ok {
+			if otherName(sub.Region, r.Region, sub.VPC, r.VPC) {
+				return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+			}
+			if r.Keep {
+				return false, nil
+			}
+			if sub.CIDR != r.CIDR {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
+			}
+			if sub.Zone != r.Zone {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "zone is immutable"}
+			}
+			return false, nil
+		}
+		if r.Keep || !r.AllowMissing {
+			if r.Keep {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
+			}
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+		}
+		return true, st.CreateSubnet(r.ID, r)
 	})
 }
 
@@ -184,6 +280,13 @@ func (s *Service) DeleteSubnet(ctx context.Context, c domain.Call, r domain.Dele
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteSubnet, string(r.Subnet), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		sub, ok := st.Subnets[r.Subnet]
+		if ok && otherName(sub.Region, r.Region, sub.VPC, r.VPC) {
+			return absentAtName(r.RejectMissing, "subnet not found")
+		}
+		if !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+		}
 		return st.DeleteSubnet(r)
 	})
 }
@@ -193,9 +296,92 @@ func (s *Service) CreateSecurityGroup(ctx context.Context, c domain.Call, r doma
 	if r.VPC == "" || r.Name == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group vpc and name are required"}
 	}
-	id := s.newID("sg-")
+	var rules []domain.Rule
+	if len(r.Rules) > 0 {
+		canon, err := domain.CanonicalRules(r.Rules)
+		if err != nil {
+			return domain.Operation{}, err
+		}
+		r.Rules = canon
+		rules = canon
+	}
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("sg-")
+	}
 	return s.mutate(ctx, c, domain.OpCreateSecurityGroup, id, r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
-		return true, st.CreateSecurityGroup(domain.SecurityGroupID(id), r)
+		if g, ok := st.Groups[domain.SecurityGroupID(id)]; ok {
+			if g.VPC == r.VPC && g.Name == r.Name && g.Region == r.Region && sameRules(g.Rules, rules, r.ReplaceRules) && (g.Status == domain.StatusPending || g.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "security group id already exists"}
+		}
+		if err := st.CreateSecurityGroup(domain.SecurityGroupID(id), r); err != nil {
+			return false, err
+		}
+		if len(rules) == 0 {
+			if !r.ReplaceRules {
+				return true, nil
+			}
+			_, err := st.RevokeRules(domain.RevokeRules{Group: domain.SecurityGroupID(id), Rules: []domain.Rule{domain.DefaultEgress()}})
+			return true, err
+		}
+		if _, err := st.RevokeRules(domain.RevokeRules{Group: domain.SecurityGroupID(id), Rules: []domain.Rule{domain.DefaultEgress()}}); err != nil {
+			return false, err
+		}
+		return true, st.AuthorizeRules(domain.AuthorizeRules{Group: domain.SecurityGroupID(id), Rules: rules})
+	})
+}
+
+// UpdateSecurityGroup makes the group's rules the requested set.
+// An empty set revokes every live rule. allow_missing creates the group.
+func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r domain.CreateSecurityGroup) (domain.Operation, error) {
+	if r.ID == "" || r.VPC == "" || r.Name == "" {
+		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group vpc and name are required"}
+	}
+	var rules []domain.Rule
+	if len(r.Rules) > 0 {
+		canon, err := domain.CanonicalRules(r.Rules)
+		if err != nil {
+			return domain.Operation{}, err
+		}
+		r.Rules = canon
+		rules = canon
+	}
+	return s.mutate(ctx, c, domain.OpUpdateSecurityGroup, string(r.ID), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		g, ok := st.Groups[r.ID]
+		if ok && otherName(g.Region, r.Region, g.VPC, r.VPC) {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
+		}
+		if !ok {
+			if !r.AllowMissing {
+				return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
+			}
+			if r.KeepRules {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "security group spec is required"}
+			}
+			if err := st.CreateSecurityGroup(r.ID, r); err != nil {
+				return false, err
+			}
+			if len(rules) == 0 {
+				if !r.ReplaceRules {
+					return true, nil
+				}
+				_, err := st.RevokeRules(domain.RevokeRules{Group: r.ID, Rules: []domain.Rule{domain.DefaultEgress()}})
+				return true, err
+			}
+			if _, err := st.RevokeRules(domain.RevokeRules{Group: r.ID, Rules: []domain.Rule{domain.DefaultEgress()}}); err != nil {
+				return false, err
+			}
+			return true, st.AuthorizeRules(domain.AuthorizeRules{Group: r.ID, Rules: rules})
+		}
+		if g.Default {
+			return false, &domain.Error{Kind: domain.Precondition, Msg: "default security group cannot be changed"}
+		}
+		if r.KeepRules {
+			return false, nil
+		}
+		return syncRules(st, g, rules)
 	})
 }
 
@@ -205,6 +391,13 @@ func (s *Service) DeleteSecurityGroup(ctx context.Context, c domain.Call, r doma
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "security group id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDeleteSecurityGroup, string(r.Group), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		g, ok := st.Groups[r.Group]
+		if ok && otherName(g.Region, r.Region, g.VPC, r.VPC) {
+			return absentAtName(r.RejectMissing, "security group not found")
+		}
+		if !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
+		}
 		return st.DeleteSecurityGroup(r)
 	})
 }
@@ -244,8 +437,17 @@ func (s *Service) AllocateElasticIP(ctx context.Context, c domain.Call, r domain
 	if r.VPC == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
-	id := s.newID("eip-")
+	id := string(r.ID)
+	if id == "" {
+		id = s.newID("eip-")
+	}
 	return s.mutate(ctx, c, domain.OpAllocateElasticIP, id, r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
+		if e, ok := st.ElasticIPs[domain.ElasticIPID(id)]; ok {
+			if e.VPC == r.VPC && e.Region == r.Region && (e.Status == domain.StatusPending || e.Status == domain.StatusAvailable) {
+				return false, nil
+			}
+			return false, &domain.Error{Kind: domain.Conflict, Msg: "elastic ip id already exists"}
+		}
 		return true, st.AllocateElasticIP(domain.ElasticIPID(id), r, s.pool, taken)
 	})
 }
@@ -256,6 +458,13 @@ func (s *Service) ReleaseElasticIP(ctx context.Context, c domain.Call, r domain.
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpReleaseElasticIP, string(r.ElasticIP), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		e, ok := st.ElasticIPs[r.ElasticIP]
+		if ok && otherName(e.Region, r.Region, "", "") {
+			return absentAtName(r.RejectMissing, "elastic ip not found")
+		}
+		if !ok && r.RejectMissing {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+		}
 		return st.ReleaseElasticIP(r)
 	})
 }
@@ -276,8 +485,91 @@ func (s *Service) DisassociateElasticIP(ctx context.Context, c domain.Call, r do
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip id is required"}
 	}
 	return s.mutate(ctx, c, domain.OpDisassociateElasticIP, string(r.ElasticIP), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		e, ok := st.ElasticIPs[r.ElasticIP]
+		if ok && otherName(e.Region, r.Region, "", "") {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+		}
+		if !ok {
+			if r.AllowMissing {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "an address cannot be created without a vpc"}
+			}
+			if r.RejectMissing {
+				return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+			}
+		}
+		if r.Keep {
+			return false, nil
+		}
 		return st.DisassociateElasticIP(r)
 	})
+}
+
+// keepBody is the fingerprint of an update that does not touch the spec.
+type keepBody struct {
+	ID     string `json:"id"`
+	Parent string `json:"parent,omitempty"`
+	Region string `json:"region,omitempty"`
+	Keep   bool   `json:"keep"`
+}
+
+// otherName reports that a stored resource is not the one named by the request.
+// An empty wanted region or parent skips that check. An empty stored region matches any region.
+func otherName(storedRegion, wantRegion string, storedParent, wantParent domain.VPCID) bool {
+	if wantParent != "" && storedParent != wantParent {
+		return true
+	}
+	return wantRegion != "" && storedRegion != "" && storedRegion != wantRegion
+}
+
+// absentAtName refuses a delete of a different resource, and treats allow_missing as a no-op.
+func absentAtName(reject bool, msg string) (bool, error) {
+	if reject {
+		return false, &domain.Error{Kind: domain.NotFound, Msg: msg}
+	}
+	return false, nil
+}
+
+func syncRules(st *domain.State, g domain.SecurityGroup, want []domain.Rule) (bool, error) {
+	if len(want) == 0 {
+		if len(g.Rules) == 0 {
+			return false, nil
+		}
+		return st.RevokeRules(domain.RevokeRules{Group: g.ID, Rules: g.Rules})
+	}
+	have := make(map[domain.Rule]bool, len(g.Rules))
+	for _, rule := range g.Rules {
+		have[rule] = true
+	}
+	need := make(map[domain.Rule]bool, len(want))
+	for _, rule := range want {
+		need[rule] = true
+	}
+	var revoke, add []domain.Rule
+	for _, rule := range g.Rules {
+		if !need[rule] {
+			revoke = append(revoke, rule)
+		}
+	}
+	for _, rule := range want {
+		if !have[rule] {
+			add = append(add, rule)
+		}
+	}
+	write := false
+	if len(revoke) > 0 {
+		w, err := st.RevokeRules(domain.RevokeRules{Group: g.ID, Rules: revoke})
+		if err != nil {
+			return false, err
+		}
+		write = w
+	}
+	if len(add) > 0 {
+		if err := st.AuthorizeRules(domain.AuthorizeRules{Group: g.ID, Rules: add}); err != nil {
+			return false, err
+		}
+		write = true
+	}
+	return write, nil
 }
 
 // GetVPC reads one VPC in the project.
@@ -402,6 +694,59 @@ func (s *Service) GetOperation(ctx context.Context, p domain.ProjectID, id strin
 	return s.repo.operation(ctx, p, id)
 }
 
+// OperationView is an operation and the resource it still names.
+type OperationView struct {
+	Operation domain.Operation
+	VPC       *domain.VPC
+	Subnet    *domain.Subnet
+	Group     *domain.SecurityGroup
+	ElasticIP *domain.ElasticIP
+}
+
+// ViewOperation loads an operation and its resource together.
+func (s *Service) ViewOperation(ctx context.Context, p domain.ProjectID, id string) (OperationView, error) {
+	op, err := s.GetOperation(ctx, p, id)
+	if err != nil {
+		return OperationView{}, err
+	}
+	view := OperationView{Operation: op}
+	switch op.Type {
+	case domain.OpCreateVPC, domain.OpUpdateVPC, domain.OpDeleteVPC:
+		v, err := s.GetVPC(ctx, op.Project, domain.VPCID(op.Resource))
+		if err != nil {
+			return view, ignoreMissing(err)
+		}
+		view.VPC = &v
+	case domain.OpCreateSubnet, domain.OpUpdateSubnet, domain.OpDeleteSubnet:
+		sub, err := s.GetSubnet(ctx, op.Project, domain.SubnetID(op.Resource))
+		if err != nil {
+			return view, ignoreMissing(err)
+		}
+		view.Subnet = &sub
+	case domain.OpCreateSecurityGroup, domain.OpUpdateSecurityGroup, domain.OpDeleteSecurityGroup, domain.OpAuthorizeRules, domain.OpRevokeRules:
+		g, err := s.GetSecurityGroup(ctx, op.Project, domain.SecurityGroupID(op.Resource))
+		if err != nil {
+			return view, ignoreMissing(err)
+		}
+		view.Group = &g
+	case domain.OpAllocateElasticIP, domain.OpReleaseElasticIP, domain.OpAssociateElasticIP, domain.OpDisassociateElasticIP:
+		e, err := s.GetElasticIP(ctx, op.Project, domain.ElasticIPID(op.Resource))
+		if err != nil {
+			return view, ignoreMissing(err)
+		}
+		view.ElasticIP = &e
+	}
+	return view, nil
+}
+
+func ignoreMissing(err error) error {
+	var de *domain.Error
+	if errors.As(err, &de) && de.Kind == domain.NotFound {
+		return nil
+	}
+	return err
+}
+
 func (s *Service) loadProject(ctx context.Context, p domain.ProjectID) (domain.State, error) {
 	if p == "" {
 		return domain.State{}, &domain.Error{Kind: domain.Invalid, Msg: "project id is required"}
@@ -443,11 +788,17 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 		if err != nil {
 			return domain.Operation{}, err
 		}
+		if c.DryRun {
+			return domain.Operation{
+				ID: "validate-" + resource, Project: c.Project, Type: typ, Resource: resource,
+				State: domain.OpSucceeded, Key: c.Key,
+			}, nil
+		}
 		op := domain.Operation{
 			ID: s.newID("op-"), Project: c.Project, Type: typ, Resource: resource,
 			State: domain.OpPending, Key: c.Key,
 		}
-		lane, _ := clone.Lane(resource)
+		lane, _ := clone.LaneKind(domain.KindOf(typ), resource)
 		enq := &job{op: op, fingerprint: fp, lane: lane}
 		cmt := commit{project: c.Project, enqueue: enq}
 		if write {
@@ -505,6 +856,25 @@ func (s *Service) nudge() {
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+func sameRules(got, want []domain.Rule, replaceEmpty bool) bool {
+	if len(want) == 0 {
+		if replaceEmpty {
+			return len(got) == 0
+		}
+		return len(got) == 1 && got[0] == domain.DefaultEgress()
+	}
+	canon, err := domain.CanonicalRules(got)
+	if err != nil || len(canon) != len(want) {
+		return false
+	}
+	for i := range canon {
+		if canon[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func fingerprint(typ domain.OperationType, req any) ([32]byte, error) {
@@ -570,7 +940,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	observed := st.Clone()
-	if err := s.converge(ctx, observed, j.op.Resource); err != nil {
+	if err := s.converge(ctx, observed, j.op.Type, j.op.Resource); err != nil {
 		if err := s.failOrRetry(ctx, j, err); err != nil {
 			return false, err
 		}
@@ -583,7 +953,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		cur.Settle(j.op.Resource, observed)
+		cur.SettleKind(domain.KindOf(j.op.Type), j.op.Resource, observed)
 		done := j
 		done.op.State = domain.OpSucceeded
 		done.op.Err = nil
@@ -623,7 +993,7 @@ func (s *Service) failJob(ctx context.Context, j job, cause error) error {
 		if err != nil {
 			return err
 		}
-		cur.Fail(j.op.Resource)
+		cur.FailKind(domain.KindOf(j.op.Type), j.op.Resource)
 		done := j
 		done.op.State = domain.OpFailed
 		done.op.Err = de
@@ -639,13 +1009,14 @@ func (s *Service) failJob(ctx context.Context, j job, cause error) error {
 	return last
 }
 
-func (s *Service) converge(ctx context.Context, observed domain.State, id string) error {
-	actions, found, err := observed.Plan(id)
+func (s *Service) converge(ctx context.Context, observed domain.State, typ domain.OperationType, id string) error {
+	kind := domain.KindOf(typ)
+	actions, found, err := observed.PlanKind(kind, id)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return s.deleteByID(ctx, id)
+		return s.deleteByKind(ctx, kind, id)
 	}
 	for _, action := range actions {
 		if err := s.exec(ctx, action); err != nil {
@@ -683,6 +1054,21 @@ func (s *Service) exec(ctx context.Context, a domain.Action) error {
 		return s.dp.deleteNAT(ctx, a.EIP, a.Addr)
 	default:
 		return &domain.Error{Kind: domain.Dataplane, Msg: "unknown dataplane action"}
+	}
+}
+
+func (s *Service) deleteByKind(ctx context.Context, kind domain.ResourceKind, id string) error {
+	switch kind {
+	case domain.KindVPC:
+		return s.dp.deleteVPC(ctx, domain.VPC{ID: domain.VPCID(id)})
+	case domain.KindSubnet:
+		return s.dp.deleteSubnet(ctx, domain.Subnet{ID: domain.SubnetID(id)})
+	case domain.KindGroup:
+		return s.dp.deleteGroup(ctx, domain.SecurityGroup{ID: domain.SecurityGroupID(id)})
+	case domain.KindAddress:
+		return s.dp.deleteElasticIP(ctx, domain.ElasticIP{ID: domain.ElasticIPID(id)})
+	default:
+		return s.deleteByID(ctx, id)
 	}
 }
 

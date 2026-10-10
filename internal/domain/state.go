@@ -83,9 +83,9 @@ func (s *State) CreateVPC(id VPCID, sg SecurityGroupID, r CreateVPC) error {
 			return conflict("vpc cidr contains an elastic ip")
 		}
 	}
-	s.VPCs[id] = VPC{ID: id, CIDR: r.CIDR, DefaultGroup: sg, Status: StatusPending}
+	s.VPCs[id] = VPC{ID: id, CIDR: r.CIDR, DefaultGroup: sg, Region: r.Region, Status: StatusPending}
 	s.Groups[sg] = SecurityGroup{
-		ID: sg, VPC: id, Name: "default", Default: true,
+		ID: sg, VPC: id, Name: "default", Default: true, Region: r.Region,
 		Rules:  []Rule{DefaultEgress()},
 		Status: StatusPending,
 	}
@@ -105,6 +105,9 @@ func (s *State) CreateSubnet(id SubnetID, r CreateSubnet) error {
 	if !ok {
 		return notFound("vpc not found")
 	}
+	if v.Region != "" && r.Region != "" && v.Region != r.Region {
+		return notFound("vpc not found")
+	}
 	if err := usable(v.Status); err != nil {
 		return err
 	}
@@ -119,7 +122,7 @@ func (s *State) CreateSubnet(id SubnetID, r CreateSubnet) error {
 			return conflict("subnet cidr overlaps an existing subnet")
 		}
 	}
-	s.Subnets[id] = Subnet{ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Status: StatusPending}
+	s.Subnets[id] = Subnet{ID: id, VPC: r.VPC, CIDR: r.CIDR, Zone: r.Zone, Region: r.Region, Status: StatusPending}
 	return nil
 }
 
@@ -136,6 +139,9 @@ func (s *State) CreateSecurityGroup(id SecurityGroupID, r CreateSecurityGroup) e
 	if !ok {
 		return notFound("vpc not found")
 	}
+	if v.Region != "" && r.Region != "" && v.Region != r.Region {
+		return notFound("vpc not found")
+	}
 	if err := usable(v.Status); err != nil {
 		return err
 	}
@@ -148,7 +154,7 @@ func (s *State) CreateSecurityGroup(id SecurityGroupID, r CreateSecurityGroup) e
 		}
 	}
 	s.Groups[id] = SecurityGroup{
-		ID: id, VPC: r.VPC, Name: r.Name,
+		ID: id, VPC: r.VPC, Name: r.Name, Region: r.Region,
 		Rules:  []Rule{DefaultEgress()},
 		Status: StatusPending,
 	}
@@ -258,6 +264,9 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if !ok {
 		return notFound("vpc not found")
 	}
+	if v.Region != "" && r.Region != "" && v.Region != r.Region {
+		return notFound("vpc not found")
+	}
 	if err := usable(v.Status); err != nil {
 		return err
 	}
@@ -272,7 +281,7 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if !ok {
 		return exhausted("elastic ip pool is exhausted")
 	}
-	s.ElasticIPs[id] = ElasticIP{ID: id, VPC: r.VPC, Address: addr, Status: StatusPending}
+	s.ElasticIPs[id] = ElasticIP{ID: id, VPC: r.VPC, Address: addr, Region: r.Region, Status: StatusPending}
 	return nil
 }
 
@@ -466,6 +475,63 @@ func (s State) Plan(id string) ([]Action, bool, error) {
 	return nil, false, nil
 }
 
+// PlanKind plans id inside one resource map.
+func (s State) PlanKind(kind ResourceKind, id string) ([]Action, bool, error) {
+	switch kind {
+	case KindVPC:
+		v, ok := s.VPCs[VPCID(id)]
+		if !ok {
+			return nil, false, nil
+		}
+		return s.planVPC(v)
+	case KindSubnet:
+		sub, ok := s.Subnets[SubnetID(id)]
+		if !ok {
+			return nil, false, nil
+		}
+		return s.planSubnet(sub)
+	case KindGroup:
+		g, ok := s.Groups[SecurityGroupID(id)]
+		if !ok {
+			return nil, false, nil
+		}
+		return s.planGroup(g)
+	case KindAddress:
+		e, ok := s.ElasticIPs[ElasticIPID(id)]
+		if !ok {
+			return nil, false, nil
+		}
+		return s.planEIP(e)
+	default:
+		return s.Plan(id)
+	}
+}
+
+// LaneKind returns the VPC lane for id in one resource map.
+func (s State) LaneKind(kind ResourceKind, id string) (VPCID, bool) {
+	switch kind {
+	case KindVPC:
+		if v, ok := s.VPCs[VPCID(id)]; ok {
+			return v.ID, true
+		}
+	case KindSubnet:
+		if sub, ok := s.Subnets[SubnetID(id)]; ok {
+			return sub.VPC, true
+		}
+	case KindGroup:
+		if g, ok := s.Groups[SecurityGroupID(id)]; ok {
+			return g.VPC, true
+		}
+	case KindAddress:
+		if e, ok := s.ElasticIPs[ElasticIPID(id)]; ok {
+			return e.VPC, true
+		}
+	default:
+		return s.Lane(id)
+	}
+	return "", false
+}
+
 // Settle records that the dataplane now matches observed for id.
 // It advances a still-pending resource to available, removes a still-deleting
 // resource, and drops revoke and detach marks that were in observed.
@@ -485,6 +551,32 @@ func (s *State) Settle(id string, observed State) []netip.Addr {
 	}
 	if e, ok := observed.ElasticIPs[ElasticIPID(id)]; ok {
 		return s.settleEIP(e)
+	}
+	return nil
+}
+
+// SettleKind settles id inside one resource map.
+func (s *State) SettleKind(kind ResourceKind, id string, observed State) []netip.Addr {
+	s.init()
+	switch kind {
+	case KindVPC:
+		if v, ok := observed.VPCs[VPCID(id)]; ok {
+			return s.settleVPC(v)
+		}
+	case KindSubnet:
+		if sub, ok := observed.Subnets[SubnetID(id)]; ok {
+			s.settleSubnet(sub)
+		}
+	case KindGroup:
+		if g, ok := observed.Groups[SecurityGroupID(id)]; ok {
+			s.settleGroup(g)
+		}
+	case KindAddress:
+		if e, ok := observed.ElasticIPs[ElasticIPID(id)]; ok {
+			return s.settleEIP(e)
+		}
+	default:
+		return s.Settle(id, observed)
 	}
 	return nil
 }
@@ -515,6 +607,39 @@ func (s *State) Fail(id string) {
 	if e, ok := s.ElasticIPs[ElasticIPID(id)]; ok && e.Status == StatusPending {
 		e.Status = StatusFailed
 		s.ElasticIPs[e.ID] = e
+	}
+}
+
+// FailKind marks id failed inside one resource map.
+func (s *State) FailKind(kind ResourceKind, id string) {
+	s.init()
+	switch kind {
+	case KindVPC:
+		if v, ok := s.VPCs[VPCID(id)]; ok && v.Status == StatusPending {
+			v.Status = StatusFailed
+			s.VPCs[v.ID] = v
+			if g, ok := s.Groups[v.DefaultGroup]; ok && g.Status == StatusPending {
+				g.Status = StatusFailed
+				s.Groups[g.ID] = g
+			}
+		}
+	case KindSubnet:
+		if sub, ok := s.Subnets[SubnetID(id)]; ok && sub.Status == StatusPending {
+			sub.Status = StatusFailed
+			s.Subnets[sub.ID] = sub
+		}
+	case KindGroup:
+		if g, ok := s.Groups[SecurityGroupID(id)]; ok && g.Status == StatusPending {
+			g.Status = StatusFailed
+			s.Groups[g.ID] = g
+		}
+	case KindAddress:
+		if e, ok := s.ElasticIPs[ElasticIPID(id)]; ok && e.Status == StatusPending {
+			e.Status = StatusFailed
+			s.ElasticIPs[e.ID] = e
+		}
+	default:
+		s.Fail(id)
 	}
 }
 

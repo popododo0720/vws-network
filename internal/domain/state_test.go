@@ -418,6 +418,24 @@ func TestMarshalStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPlanKindKeepsSiblingID(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("app", "sg-def", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16"), Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSubnet("app", CreateSubnet{VPC: "app", CIDR: mustPrefix(t, "10.0.1.0/24"), Zone: "az1", Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	actions, found, err := s.PlanKind(KindSubnet, "app")
+	if err != nil || !found || len(actions) == 0 || actions[0].Kind != ActEnsureSubnet {
+		t.Fatalf("plan %+v found %v err %v", actions, found, err)
+	}
+	s.FailKind(KindSubnet, "app")
+	if s.VPCs["app"].Status != StatusPending || s.Subnets["app"].Status != StatusFailed {
+		t.Fatalf("vpc %d subnet %d", s.VPCs["app"].Status, s.Subnets["app"].Status)
+	}
+}
+
 func projectWithSubnet(t *testing.T) State {
 	t.Helper()
 	var s State

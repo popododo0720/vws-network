@@ -1,563 +1,696 @@
-// Package grpcapi serves NetworkService. It parses wire values and maps
-// errors. CIDR and lifecycle rules stay in the domain.
+// Package grpcapi serves the VWS network RPCs. It parses resource names and
+// specs, and maps errors. CIDR and lifecycle rules stay in the domain.
 package grpcapi
 
 import (
 	"context"
-	"errors"
 	"net/netip"
 
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	networkv1 "github.com/popododo0720/vws-network/gen/network/v1"
+	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
+	networkv1 "github.com/popododo0720/vws-proto/gen/go/vws/network/v1"
+
 	"github.com/popododo0720/vws-network/internal/domain"
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
 // Register attaches svc to s.
 func Register(s *grpc.Server, svc *network.Service) {
-	networkv1.RegisterNetworkServiceServer(s, &handler{svc: svc})
+	h := &handler{svc: svc}
+	networkv1.RegisterVpcServiceServer(s, h)
+	networkv1.RegisterSubnetServiceServer(s, h)
+	networkv1.RegisterSecurityGroupServiceServer(s, h)
+	networkv1.RegisterAddressServiceServer(s, h)
+	longrunningpb.RegisterOperationsServer(s, h)
 }
 
-// handler implements every RPC. Embedding the unimplemented server keeps the
-// type forward-compatible, and TestHandlersOverrideUnimplemented fails when a
-// method is still the stub.
+// handler implements every network RPC. Embedding the unimplemented servers
+// keeps the type forward-compatible, and TestHandlersOverrideUnimplemented
+// fails when a method is still the stub.
 type handler struct {
-	networkv1.UnimplementedNetworkServiceServer
+	networkv1.UnimplementedVpcServiceServer
+	networkv1.UnimplementedSubnetServiceServer
+	networkv1.UnimplementedSecurityGroupServiceServer
+	networkv1.UnimplementedAddressServiceServer
+	longrunningpb.UnimplementedOperationsServer
 	svc *network.Service
 }
 
-func (h *handler) CreateVpc(ctx context.Context, req *networkv1.CreateVpcRequest) (*networkv1.Operation, error) {
+func (h *handler) CreateVpc(ctx context.Context, req *networkv1.CreateVpcRequest) (*longrunningpb.Operation, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	cidr, err := parsePrefix("cidr_block", req.GetCidrBlock())
+	project, region, err := parseRegionParent(req.GetParent())
 	if err != nil {
 		return nil, err
 	}
-	op, err := h.svc.CreateVPC(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.CreateVPC{CIDR: cidr})
-	if err != nil {
-		return nil, toStatus(err)
+	if err := resourceID(req.GetVpcId()); err != nil {
+		return nil, err
 	}
-	return toOperation(op), nil
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	cidr, err := vpcSpec(req.GetVpc())
+	if err != nil {
+		return nil, err
+	}
+	op, err := h.svc.CreateVPC(ctx, callDry(project, req.GetRequestId(), req.GetVpcId(), req.GetValidateOnly()), domain.CreateVPC{
+		CIDR: cidr, ID: domain.VPCID(req.GetVpcId()), Region: region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(project, req.GetRequestId(), vpcName(project, region, req.GetVpcId()), commonv1.OperationVerb_OPERATION_VERB_CREATE, op)
 }
 
-func (h *handler) DeleteVpc(ctx context.Context, req *networkv1.DeleteVpcRequest) (*networkv1.Operation, error) {
+func (h *handler) UpdateVpc(ctx context.Context, req *networkv1.UpdateVpcRequest) (*longrunningpb.Operation, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	op, err := h.svc.DeleteVPC(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.DeleteVPC{VPC: domain.VPCID(req.GetVpcId())})
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := checkMask(req.GetUpdateMask(), "spec", "spec.ipv4_cidr", "spec.description", "labels"); err != nil {
+		return nil, err
+	}
+	n, err := parseVPCName(req.GetVpc().GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toOperation(op), nil
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.ipv4_cidr")
+	var cidr netip.Prefix
+	if touch {
+		cidr, err = vpcSpec(req.GetVpc())
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetVpc().GetLabels(), req.GetVpc().GetSpec().GetDescription(), req.GetVpc().GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.UpdateVPC(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateVPC{
+		CIDR: cidr, ID: domain.VPCID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), vpcName(n.Project, n.Region, n.ID), commonv1.OperationVerb_OPERATION_VERB_UPDATE, op)
+}
+
+func (h *handler) DeleteVpc(ctx context.Context, req *networkv1.DeleteVpcRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	n, err := parseVPCName(req.GetName())
+	if err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := rejectEtag(req.GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.DeleteVPC(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteVPC{
+		VPC: domain.VPCID(n.ID), RejectMissing: !req.GetAllowMissing(), Region: n.Region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), vpcName(n.Project, n.Region, n.ID), commonv1.OperationVerb_OPERATION_VERB_DELETE, op)
 }
 
 func (h *handler) GetVpc(ctx context.Context, req *networkv1.GetVpcRequest) (*networkv1.Vpc, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	v, err := h.svc.GetVPC(ctx, domain.ProjectID(req.GetProjectId()), domain.VPCID(req.GetVpcId()))
+	n, err := parseVPCName(req.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toVPC(domain.ProjectID(req.GetProjectId()), v), nil
+	v, err := h.svc.GetVPC(ctx, domain.ProjectID(n.Project), domain.VPCID(n.ID))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	if v.Region != "" && v.Region != n.Region {
+		return nil, withInfo(codes.NotFound, "vpc not found", "RESOURCE_NOT_FOUND")
+	}
+	return toVPC(n.Project, v), nil
 }
 
 func (h *handler) ListVpcs(ctx context.Context, req *networkv1.ListVpcsRequest) (*networkv1.ListVpcsResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	vpcs, err := h.svc.ListVPCs(ctx, domain.ProjectID(req.GetProjectId()))
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	out := &networkv1.ListVpcsResponse{}
-	for _, v := range vpcs {
-		out.Vpcs = append(out.Vpcs, toVPC(domain.ProjectID(req.GetProjectId()), v))
-	}
-	return out, nil
-}
-
-func (h *handler) CreateSubnet(ctx context.Context, req *networkv1.CreateSubnetRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	cidr, err := parsePrefix("cidr_block", req.GetCidrBlock())
+	project, region, err := parseRegionParent(req.GetParent())
 	if err != nil {
 		return nil, err
 	}
-	op, err := h.svc.CreateSubnet(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.CreateSubnet{
-		VPC: domain.VPCID(req.GetVpcId()), CIDR: cidr, Zone: req.GetAvailabilityZone(),
-	})
+	vpcs, err := h.svc.ListVPCs(ctx, domain.ProjectID(project))
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(err, "")
 	}
-	return toOperation(op), nil
+	var msgs []*networkv1.Vpc
+	for _, v := range vpcs {
+		if v.Region != "" && v.Region != region {
+			continue
+		}
+		msgs = append(msgs, toVPC(project, v))
+	}
+	page, next, err := cutPage(msgs, req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	return &networkv1.ListVpcsResponse{Vpcs: page, NextPageToken: next}, nil
 }
 
-func (h *handler) DeleteSubnet(ctx context.Context, req *networkv1.DeleteSubnetRequest) (*networkv1.Operation, error) {
+func (h *handler) ReportVpcStatus(ctx context.Context, req *networkv1.ReportVpcStatusRequest) (*networkv1.ReportVpcStatusResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	op, err := h.svc.DeleteSubnet(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.DeleteSubnet{Subnet: domain.SubnetID(req.GetSubnetId())})
+	if req.GetStatus() == nil {
+		return nil, invalidSpec("status is required")
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	// The dataplane worker is the only writer of observed state.
+	v, err := h.GetVpc(ctx, &networkv1.GetVpcRequest{Name: req.GetName()})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toOperation(op), nil
+	return &networkv1.ReportVpcStatusResponse{Vpc: v}, nil
+}
+
+func (h *handler) CreateSubnet(ctx context.Context, req *networkv1.CreateSubnetRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	parent, err := parseVPCParent(req.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	if err := resourceID(req.GetSubnetId()); err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	cidr, zone, err := subnetSpec(req.GetSubnet())
+	if err != nil {
+		return nil, err
+	}
+	op, err := h.svc.CreateSubnet(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSubnetId(), req.GetValidateOnly()), domain.CreateSubnet{
+		VPC: domain.VPCID(parent.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(req.GetSubnetId()), Region: parent.Region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(parent.Project, req.GetRequestId(), subnetName(parent.Project, parent.Region, parent.VPC, req.GetSubnetId()), commonv1.OperationVerb_OPERATION_VERB_CREATE, op)
+}
+
+func (h *handler) UpdateSubnet(ctx context.Context, req *networkv1.UpdateSubnetRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := checkMask(req.GetUpdateMask(), "spec", "spec.zone", "spec.ipv4_cidr", "spec.description", "labels"); err != nil {
+		return nil, err
+	}
+	n, err := parseChildName(req.GetSubnet().GetName(), "subnets")
+	if err != nil {
+		return nil, err
+	}
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.zone", "spec.ipv4_cidr")
+	var cidr netip.Prefix
+	var zone string
+	if touch {
+		cidr, zone, err = subnetSpec(req.GetSubnet())
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetSubnet().GetLabels(), req.GetSubnet().GetSpec().GetDescription(), req.GetSubnet().GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.UpdateSubnet(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSubnet{
+		VPC: domain.VPCID(n.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), subnetName(n.Project, n.Region, n.VPC, n.ID), commonv1.OperationVerb_OPERATION_VERB_UPDATE, op)
+}
+
+func (h *handler) DeleteSubnet(ctx context.Context, req *networkv1.DeleteSubnetRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	n, err := parseChildName(req.GetName(), "subnets")
+	if err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := rejectEtag(req.GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.DeleteSubnet(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteSubnet{
+		Subnet: domain.SubnetID(n.ID), RejectMissing: !req.GetAllowMissing(), VPC: domain.VPCID(n.VPC), Region: n.Region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), subnetName(n.Project, n.Region, n.VPC, n.ID), commonv1.OperationVerb_OPERATION_VERB_DELETE, op)
 }
 
 func (h *handler) GetSubnet(ctx context.Context, req *networkv1.GetSubnetRequest) (*networkv1.Subnet, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	sub, err := h.svc.GetSubnet(ctx, domain.ProjectID(req.GetProjectId()), domain.SubnetID(req.GetSubnetId()))
+	n, err := parseChildName(req.GetName(), "subnets")
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toSubnet(domain.ProjectID(req.GetProjectId()), sub), nil
+	sub, err := h.svc.GetSubnet(ctx, domain.ProjectID(n.Project), domain.SubnetID(n.ID))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	if sub.VPC != domain.VPCID(n.VPC) || (sub.Region != "" && sub.Region != n.Region) {
+		return nil, withInfo(codes.NotFound, "subnet not found", "RESOURCE_NOT_FOUND")
+	}
+	return toSubnet(n.Project, sub), nil
 }
 
 func (h *handler) ListSubnets(ctx context.Context, req *networkv1.ListSubnetsRequest) (*networkv1.ListSubnetsResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	subs, err := h.svc.ListSubnets(ctx, domain.ProjectID(req.GetProjectId()), domain.VPCID(req.GetVpcId()))
+	parent, err := parseVPCParent(req.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	out := &networkv1.ListSubnetsResponse{}
+	subs, err := h.svc.ListSubnets(ctx, domain.ProjectID(parent.Project), domain.VPCID(parent.VPC))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	var msgs []*networkv1.Subnet
 	for _, sub := range subs {
-		out.Subnets = append(out.Subnets, toSubnet(domain.ProjectID(req.GetProjectId()), sub))
+		if sub.Region != "" && sub.Region != parent.Region {
+			continue
+		}
+		msgs = append(msgs, toSubnet(parent.Project, sub))
 	}
-	return out, nil
-}
-
-func (h *handler) CreateSecurityGroup(ctx context.Context, req *networkv1.CreateSecurityGroupRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	op, err := h.svc.CreateSecurityGroup(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.CreateSecurityGroup{
-		VPC: domain.VPCID(req.GetVpcId()), Name: req.GetName(),
-	})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOperation(op), nil
-}
-
-func (h *handler) DeleteSecurityGroup(ctx context.Context, req *networkv1.DeleteSecurityGroupRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	op, err := h.svc.DeleteSecurityGroup(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.DeleteSecurityGroup{Group: domain.SecurityGroupID(req.GetSecurityGroupId())})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOperation(op), nil
-}
-
-func (h *handler) AuthorizeSecurityGroupRules(ctx context.Context, req *networkv1.AuthorizeSecurityGroupRulesRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	rules, err := parseRules(req.GetRules())
+	page, next, err := cutPage(msgs, req.GetPageSize(), req.GetPageToken())
 	if err != nil {
 		return nil, err
 	}
-	op, err := h.svc.AuthorizeRules(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.AuthorizeRules{
-		Group: domain.SecurityGroupID(req.GetSecurityGroupId()), Rules: rules,
-	})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOperation(op), nil
+	return &networkv1.ListSubnetsResponse{Subnets: page, NextPageToken: next}, nil
 }
 
-func (h *handler) RevokeSecurityGroupRules(ctx context.Context, req *networkv1.RevokeSecurityGroupRulesRequest) (*networkv1.Operation, error) {
+func (h *handler) ReportSubnetStatus(ctx context.Context, req *networkv1.ReportSubnetStatusRequest) (*networkv1.ReportSubnetStatusResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	rules, err := parseRules(req.GetRules())
+	if req.GetStatus() == nil {
+		return nil, invalidSpec("status is required")
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	sub, err := h.GetSubnet(ctx, &networkv1.GetSubnetRequest{Name: req.GetName()})
 	if err != nil {
 		return nil, err
 	}
-	op, err := h.svc.RevokeRules(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.RevokeRules{
-		Group: domain.SecurityGroupID(req.GetSecurityGroupId()), Rules: rules,
+	return &networkv1.ReportSubnetStatusResponse{Subnet: sub}, nil
+}
+
+func (h *handler) CreateSecurityGroup(ctx context.Context, req *networkv1.CreateSecurityGroupRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	parent, err := parseVPCParent(req.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	if err := resourceID(req.GetSecurityGroupId()); err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	rules, err := groupSpec(req.GetSecurityGroup(), parent.Project, parent.Region, parent.VPC)
+	if err != nil {
+		return nil, err
+	}
+	op, err := h.svc.CreateSecurityGroup(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSecurityGroupId(), req.GetValidateOnly()), domain.CreateSecurityGroup{
+		VPC: domain.VPCID(parent.VPC), Name: req.GetSecurityGroupId(), ID: domain.SecurityGroupID(req.GetSecurityGroupId()),
+		Region: parent.Region, Rules: rules, ReplaceRules: true,
 	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(err, req.GetRequestId())
 	}
-	return toOperation(op), nil
+	return h.toOp(parent.Project, req.GetRequestId(), groupName(parent.Project, parent.Region, parent.VPC, req.GetSecurityGroupId()), commonv1.OperationVerb_OPERATION_VERB_CREATE, op)
+}
+
+func (h *handler) UpdateSecurityGroup(ctx context.Context, req *networkv1.UpdateSecurityGroupRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := checkMask(req.GetUpdateMask(), "spec", "spec.rules", "spec.description", "labels"); err != nil {
+		return nil, err
+	}
+	n, err := parseChildName(req.GetSecurityGroup().GetName(), "securityGroups")
+	if err != nil {
+		return nil, err
+	}
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.rules")
+	var rules []domain.Rule
+	if touch {
+		rules, err = groupSpec(req.GetSecurityGroup(), n.Project, n.Region, n.VPC)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetSecurityGroup().GetLabels(), req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.UpdateSecurityGroup(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSecurityGroup{
+		VPC: domain.VPCID(n.VPC), Name: n.ID, ID: domain.SecurityGroupID(n.ID), Region: n.Region,
+		Rules: rules, ReplaceRules: touch, AllowMissing: req.GetAllowMissing(), KeepRules: !touch,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), groupName(n.Project, n.Region, n.VPC, n.ID), commonv1.OperationVerb_OPERATION_VERB_UPDATE, op)
+}
+
+func (h *handler) DeleteSecurityGroup(ctx context.Context, req *networkv1.DeleteSecurityGroupRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	n, err := parseChildName(req.GetName(), "securityGroups")
+	if err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := rejectEtag(req.GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.DeleteSecurityGroup(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DeleteSecurityGroup{
+		Group: domain.SecurityGroupID(n.ID), RejectMissing: !req.GetAllowMissing(), VPC: domain.VPCID(n.VPC), Region: n.Region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), groupName(n.Project, n.Region, n.VPC, n.ID), commonv1.OperationVerb_OPERATION_VERB_DELETE, op)
 }
 
 func (h *handler) GetSecurityGroup(ctx context.Context, req *networkv1.GetSecurityGroupRequest) (*networkv1.SecurityGroup, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	g, err := h.svc.GetSecurityGroup(ctx, domain.ProjectID(req.GetProjectId()), domain.SecurityGroupID(req.GetSecurityGroupId()))
+	n, err := parseChildName(req.GetName(), "securityGroups")
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toGroup(domain.ProjectID(req.GetProjectId()), g), nil
+	g, err := h.svc.GetSecurityGroup(ctx, domain.ProjectID(n.Project), domain.SecurityGroupID(n.ID))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	if g.Default || g.VPC != domain.VPCID(n.VPC) || (g.Region != "" && g.Region != n.Region) {
+		return nil, withInfo(codes.NotFound, "security group not found", "RESOURCE_NOT_FOUND")
+	}
+	return toGroup(n.Project, g), nil
 }
 
 func (h *handler) ListSecurityGroups(ctx context.Context, req *networkv1.ListSecurityGroupsRequest) (*networkv1.ListSecurityGroupsResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	groups, err := h.svc.ListSecurityGroups(ctx, domain.ProjectID(req.GetProjectId()), domain.VPCID(req.GetVpcId()))
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	out := &networkv1.ListSecurityGroupsResponse{}
-	for _, g := range groups {
-		out.SecurityGroups = append(out.SecurityGroups, toGroup(domain.ProjectID(req.GetProjectId()), g))
-	}
-	return out, nil
-}
-
-func (h *handler) AllocateElasticIp(ctx context.Context, req *networkv1.AllocateElasticIpRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	op, err := h.svc.AllocateElasticIP(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.AllocateElasticIP{VPC: domain.VPCID(req.GetVpcId())})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOperation(op), nil
-}
-
-func (h *handler) ReleaseElasticIp(ctx context.Context, req *networkv1.ReleaseElasticIpRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	op, err := h.svc.ReleaseElasticIP(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.ReleaseElasticIP{ElasticIP: domain.ElasticIPID(req.GetElasticIpId())})
-	if err != nil {
-		return nil, toStatus(err)
-	}
-	return toOperation(op), nil
-}
-
-func (h *handler) AssociateElasticIp(ctx context.Context, req *networkv1.AssociateElasticIpRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	addr, err := parseAddr("private_address", req.GetPrivateAddress())
+	parent, err := parseVPCParent(req.GetParent())
 	if err != nil {
 		return nil, err
 	}
-	op, err := h.svc.AssociateElasticIP(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.AssociateElasticIP{
-		ElasticIP: domain.ElasticIPID(req.GetElasticIpId()), Private: addr,
+	groups, err := h.svc.ListSecurityGroups(ctx, domain.ProjectID(parent.Project), domain.VPCID(parent.VPC))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	var msgs []*networkv1.SecurityGroup
+	for _, g := range groups {
+		if g.Default || (g.Region != "" && g.Region != parent.Region) {
+			continue
+		}
+		msgs = append(msgs, toGroup(parent.Project, g))
+	}
+	page, next, err := cutPage(msgs, req.GetPageSize(), req.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	return &networkv1.ListSecurityGroupsResponse{SecurityGroups: page, NextPageToken: next}, nil
+}
+
+func (h *handler) ReportSecurityGroupStatus(ctx context.Context, req *networkv1.ReportSecurityGroupStatusRequest) (*networkv1.ReportSecurityGroupStatusResponse, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if req.GetStatus() == nil {
+		return nil, invalidSpec("status is required")
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	g, err := h.GetSecurityGroup(ctx, &networkv1.GetSecurityGroupRequest{Name: req.GetName()})
+	if err != nil {
+		return nil, err
+	}
+	return &networkv1.ReportSecurityGroupStatusResponse{SecurityGroup: g}, nil
+}
+
+func (h *handler) CreateAddress(ctx context.Context, req *networkv1.CreateAddressRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if _, _, err := parseRegionParent(req.GetParent()); err != nil {
+		return nil, err
+	}
+	if err := resourceID(req.GetAddressId()); err != nil {
+		return nil, err
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := addressSpec(req.GetAddress()); err != nil {
+		return nil, err
+	}
+	if req.GetAddress().GetSpec().GetAssociation() != nil {
+		return nil, invalidSpec("association names a compute instance")
+	}
+	// This service allocates a pool address inside a VPC. The request has no VPC.
+	return nil, invalidSpec("an address is allocated in a vpc")
+}
+
+func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddressRequest) (*longrunningpb.Operation, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := checkMask(req.GetUpdateMask(), "spec", "spec.association", "spec.ip_version", "labels"); err != nil {
+		return nil, err
+	}
+	n, err := parseAddressName(req.GetAddress().GetName())
+	if err != nil {
+		return nil, err
+	}
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.association")
+	if touch {
+		if err := addressSpec(req.GetAddress()); err != nil {
+			return nil, err
+		}
+		if req.GetAddress().GetSpec().GetAssociation() != nil {
+			return nil, invalidSpec("association names a compute instance")
+		}
+	} else if err := rejectResource(req.GetAddress().GetLabels(), "", req.GetAddress().GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.DisassociateElasticIP(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.DisassociateElasticIP{
+		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region, Keep: !touch,
 	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, toStatus(err, req.GetRequestId())
 	}
-	return toOperation(op), nil
+	return h.toOp(n.Project, req.GetRequestId(), addressName(n.Project, n.Region, n.ID), commonv1.OperationVerb_OPERATION_VERB_UPDATE, op)
 }
 
-func (h *handler) DisassociateElasticIp(ctx context.Context, req *networkv1.DisassociateElasticIpRequest) (*networkv1.Operation, error) {
+func (h *handler) DeleteAddress(ctx context.Context, req *networkv1.DeleteAddressRequest) (*longrunningpb.Operation, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	op, err := h.svc.DisassociateElasticIP(ctx, callOf(req.GetProjectId(), req.GetIdempotencyKey()), domain.DisassociateElasticIP{ElasticIP: domain.ElasticIPID(req.GetElasticIpId())})
+	n, err := parseAddressName(req.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toOperation(op), nil
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := rejectEtag(req.GetEtag()); err != nil {
+		return nil, err
+	}
+	op, err := h.svc.ReleaseElasticIP(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.ReleaseElasticIP{
+		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), Region: n.Region,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(n.Project, req.GetRequestId(), addressName(n.Project, n.Region, n.ID), commonv1.OperationVerb_OPERATION_VERB_DELETE, op)
 }
 
-func (h *handler) GetElasticIp(ctx context.Context, req *networkv1.GetElasticIpRequest) (*networkv1.ElasticIp, error) {
+func (h *handler) GetAddress(ctx context.Context, req *networkv1.GetAddressRequest) (*networkv1.Address, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	e, err := h.svc.GetElasticIP(ctx, domain.ProjectID(req.GetProjectId()), domain.ElasticIPID(req.GetElasticIpId()))
+	n, err := parseAddressName(req.GetName())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toElasticIP(domain.ProjectID(req.GetProjectId()), e), nil
+	e, err := h.svc.GetElasticIP(ctx, domain.ProjectID(n.Project), domain.ElasticIPID(n.ID))
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	if e.Region != "" && e.Region != n.Region {
+		return nil, withInfo(codes.NotFound, "address not found", "RESOURCE_NOT_FOUND")
+	}
+	return toAddress(n.Project, n.Region, e), nil
 }
 
-func (h *handler) ListElasticIps(ctx context.Context, req *networkv1.ListElasticIpsRequest) (*networkv1.ListElasticIpsResponse, error) {
+func (h *handler) ListAddresses(ctx context.Context, req *networkv1.ListAddressesRequest) (*networkv1.ListAddressesResponse, error) {
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, requiredRequest()
 	}
-	eips, err := h.svc.ListElasticIPs(ctx, domain.ProjectID(req.GetProjectId()), domain.VPCID(req.GetVpcId()))
+	project, region, err := parseRegionParent(req.GetParent())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	out := &networkv1.ListElasticIpsResponse{}
+	eips, err := h.svc.ListElasticIPs(ctx, domain.ProjectID(project), "")
+	if err != nil {
+		return nil, toStatus(err, "")
+	}
+	var msgs []*networkv1.Address
 	for _, e := range eips {
-		out.ElasticIps = append(out.ElasticIps, toElasticIP(domain.ProjectID(req.GetProjectId()), e))
+		if e.Region != "" && e.Region != region {
+			continue
+		}
+		msgs = append(msgs, toAddress(project, region, e))
 	}
-	return out, nil
-}
-
-func (h *handler) GetOperation(ctx context.Context, req *networkv1.GetOperationRequest) (*networkv1.Operation, error) {
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	op, err := h.svc.GetOperation(ctx, domain.ProjectID(req.GetProjectId()), req.GetOperationId())
+	page, next, err := cutPage(msgs, req.GetPageSize(), req.GetPageToken())
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return toOperation(op), nil
+	return &networkv1.ListAddressesResponse{Addresses: page, NextPageToken: next}, nil
 }
 
-func callOf(project, key string) domain.Call {
-	return domain.Call{Project: domain.ProjectID(project), Key: domain.IdempotencyKey(key)}
+func (h *handler) ReportAddressStatus(ctx context.Context, req *networkv1.ReportAddressStatusRequest) (*networkv1.ReportAddressStatusResponse, error) {
+	if req == nil {
+		return nil, requiredRequest()
+	}
+	if req.GetStatus() == nil {
+		return nil, invalidSpec("status is required")
+	}
+	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	addr, err := h.GetAddress(ctx, &networkv1.GetAddressRequest{Name: req.GetName()})
+	if err != nil {
+		return nil, err
+	}
+	return &networkv1.ReportAddressStatusResponse{Address: addr}, nil
 }
 
-func parsePrefix(field, raw string) (netip.Prefix, error) {
-	p, err := netip.ParsePrefix(raw)
-	if err != nil || !p.IsValid() || !p.Addr().Is4() {
-		return netip.Prefix{}, status.Errorf(codes.InvalidArgument, "%s is not an ipv4 prefix", field)
+func vpcSpec(v *networkv1.Vpc) (netip.Prefix, error) {
+	if v == nil || v.GetSpec() == nil {
+		return netip.Prefix{}, invalidSpec("vpc spec is required")
 	}
-	return p, nil
+	if err := rejectText(v.GetLabels(), v.GetSpec().GetDescription()); err != nil {
+		return netip.Prefix{}, err
+	}
+	if err := rejectEtag(v.GetEtag()); err != nil {
+		return netip.Prefix{}, err
+	}
+	return parsePrefix("ipv4_cidr", v.GetSpec().GetIpv4Cidr())
 }
 
-func parseAddr(field, raw string) (netip.Addr, error) {
-	a, err := netip.ParseAddr(raw)
-	if err != nil || !a.Is4() {
-		return netip.Addr{}, status.Errorf(codes.InvalidArgument, "%s is not an ipv4 address", field)
+func subnetSpec(s *networkv1.Subnet) (netip.Prefix, string, error) {
+	if s == nil || s.GetSpec() == nil {
+		return netip.Prefix{}, "", invalidSpec("subnet spec is required")
 	}
-	return a, nil
+	if err := rejectText(s.GetLabels(), s.GetSpec().GetDescription()); err != nil {
+		return netip.Prefix{}, "", err
+	}
+	if err := rejectEtag(s.GetEtag()); err != nil {
+		return netip.Prefix{}, "", err
+	}
+	if err := resourceID(s.GetSpec().GetZone()); err != nil {
+		return netip.Prefix{}, "", err
+	}
+	cidr, err := parsePrefix("ipv4_cidr", s.GetSpec().GetIpv4Cidr())
+	if err != nil {
+		return netip.Prefix{}, "", err
+	}
+	return cidr, s.GetSpec().GetZone(), nil
 }
 
-func parseRules(rs []*networkv1.Rule) ([]domain.Rule, error) {
-	out := make([]domain.Rule, 0, len(rs))
-	for _, r := range rs {
-		if r == nil {
-			return nil, status.Error(codes.InvalidArgument, "rule is required")
-		}
-		dir, err := parseDirection(r.GetDirection())
-		if err != nil {
-			return nil, err
-		}
-		proto, err := parseProtocol(r.GetProtocol())
-		if err != nil {
-			return nil, err
-		}
-		rule := domain.Rule{Direction: dir, Protocol: proto, FromPort: r.GetFromPort(), ToPort: r.GetToPort()}
-		switch peer := r.Peer.(type) {
-		case *networkv1.Rule_CidrBlock:
-			cidr, err := parsePrefix("cidr_block", peer.CidrBlock)
-			if err != nil {
-				return nil, err
-			}
-			rule.Peer.CIDR = cidr
-		case *networkv1.Rule_SecurityGroupId:
-			if peer.SecurityGroupId == "" {
-				return nil, status.Error(codes.InvalidArgument, "security group peer is required")
-			}
-			rule.Peer.Group = domain.SecurityGroupID(peer.SecurityGroupId)
-		default:
-			return nil, status.Error(codes.InvalidArgument, "rule peer is required")
-		}
-		out = append(out, rule)
+func groupSpec(g *networkv1.SecurityGroup, project, region, vpc string) ([]domain.Rule, error) {
+	if g == nil || g.GetSpec() == nil {
+		return nil, invalidSpec("security group spec is required")
 	}
-	return out, nil
+	if err := rejectText(g.GetLabels(), g.GetSpec().GetDescription()); err != nil {
+		return nil, err
+	}
+	if err := rejectEtag(g.GetEtag()); err != nil {
+		return nil, err
+	}
+	return parseRules(g.GetSpec().GetRules(), project, region, vpc)
 }
 
-func parseDirection(d networkv1.Direction) (domain.Direction, error) {
-	switch d {
-	case networkv1.Direction_DIRECTION_INGRESS:
-		return domain.Ingress, nil
-	case networkv1.Direction_DIRECTION_EGRESS:
-		return domain.Egress, nil
-	default:
-		return 0, status.Error(codes.InvalidArgument, "rule direction is required")
+func addressSpec(a *networkv1.Address) error {
+	if a == nil || a.GetSpec() == nil {
+		return invalidSpec("address spec is required")
 	}
-}
-
-func parseProtocol(p networkv1.Protocol) (domain.Protocol, error) {
-	switch p {
-	case networkv1.Protocol_PROTOCOL_TCP:
-		return domain.TCP, nil
-	case networkv1.Protocol_PROTOCOL_UDP:
-		return domain.UDP, nil
-	case networkv1.Protocol_PROTOCOL_ICMP:
-		return domain.ICMP, nil
-	case networkv1.Protocol_PROTOCOL_ALL:
-		return domain.All, nil
-	default:
-		return 0, status.Error(codes.InvalidArgument, "rule protocol is required")
-	}
-}
-
-func toStatus(err error) error {
-	if err == nil {
-		return nil
-	}
-	if _, ok := status.FromError(err); ok && status.Code(err) != codes.Unknown {
+	if err := rejectText(a.GetLabels(), ""); err != nil {
 		return err
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return status.FromContextError(err).Err()
+	if err := rejectEtag(a.GetEtag()); err != nil {
+		return err
 	}
-	var de *domain.Error
-	if !errors.As(err, &de) {
-		return status.Error(codes.Internal, "internal error")
+	if a.GetSpec().GetIpVersion() != networkv1.IpVersion_IP_VERSION_IPV4 {
+		return invalidSpec("ip_version must be ipv4")
 	}
-	return status.Error(codeOf(de.Kind), de.Msg)
+	return nil
 }
 
-func codeOf(k domain.ErrKind) codes.Code {
-	switch k {
-	case domain.Invalid:
-		return codes.InvalidArgument
-	case domain.NotFound:
-		return codes.NotFound
-	case domain.Conflict:
-		return codes.AlreadyExists
-	case domain.Precondition:
-		return codes.FailedPrecondition
-	case domain.Exhausted:
-		return codes.ResourceExhausted
-	case domain.Dataplane:
-		return codes.Unavailable
-	case domain.Busy:
-		return codes.Aborted
-	default:
-		return codes.Internal
+func rejectResource(labels map[string]string, description, etag string) error {
+	if err := rejectText(labels, description); err != nil {
+		return err
 	}
+	return rejectEtag(etag)
 }
 
-func toOperation(op domain.Operation) *networkv1.Operation {
-	out := &networkv1.Operation{
-		Id:             op.ID,
-		ProjectId:      string(op.Project),
-		Type:           string(op.Type),
-		ResourceId:     op.Resource,
-		State:          toOpState(op.State),
-		IdempotencyKey: string(op.Key),
+func checkMask(mask *fieldmaskpb.FieldMask, allowed ...string) error {
+	for _, path := range maskPaths(mask) {
+		if err := allowPath(path, allowed...); err != nil {
+			return err
+		}
 	}
-	if op.Err != nil {
-		out.ErrorMessage = op.Err.Msg
-	}
-	return out
-}
-
-func toOpState(s domain.OpState) networkv1.Operation_State {
-	switch s {
-	case domain.OpPending:
-		return networkv1.Operation_PENDING
-	case domain.OpRunning:
-		return networkv1.Operation_RUNNING
-	case domain.OpSucceeded:
-		return networkv1.Operation_SUCCEEDED
-	case domain.OpFailed:
-		return networkv1.Operation_FAILED
-	default:
-		return networkv1.Operation_STATE_UNSPECIFIED
-	}
-}
-
-func toStatusValue(s domain.Status) networkv1.ResourceStatus {
-	switch s {
-	case domain.StatusPending:
-		return networkv1.ResourceStatus_RESOURCE_STATUS_PENDING
-	case domain.StatusAvailable:
-		return networkv1.ResourceStatus_RESOURCE_STATUS_AVAILABLE
-	case domain.StatusDeleting:
-		return networkv1.ResourceStatus_RESOURCE_STATUS_DELETING
-	case domain.StatusFailed:
-		return networkv1.ResourceStatus_RESOURCE_STATUS_FAILED
-	default:
-		return networkv1.ResourceStatus_RESOURCE_STATUS_UNSPECIFIED
-	}
-}
-
-func toVPC(p domain.ProjectID, v domain.VPC) *networkv1.Vpc {
-	return &networkv1.Vpc{
-		Id:                     string(v.ID),
-		ProjectId:              string(p),
-		CidrBlock:              v.CIDR.String(),
-		DefaultSecurityGroupId: string(v.DefaultGroup),
-		Status:                 toStatusValue(v.Status),
-	}
-}
-
-func toSubnet(p domain.ProjectID, s domain.Subnet) *networkv1.Subnet {
-	return &networkv1.Subnet{
-		Id:               string(s.ID),
-		ProjectId:        string(p),
-		VpcId:            string(s.VPC),
-		CidrBlock:        s.CIDR.String(),
-		AvailabilityZone: s.Zone,
-		Status:           toStatusValue(s.Status),
-	}
-}
-
-func toGroup(p domain.ProjectID, g domain.SecurityGroup) *networkv1.SecurityGroup {
-	out := &networkv1.SecurityGroup{
-		Id:        string(g.ID),
-		ProjectId: string(p),
-		VpcId:     string(g.VPC),
-		Name:      g.Name,
-		IsDefault: g.Default,
-		Status:    toStatusValue(g.Status),
-	}
-	for _, rule := range g.Rules {
-		out.Rules = append(out.Rules, toRule(rule))
-	}
-	return out
-}
-
-func toElasticIP(p domain.ProjectID, e domain.ElasticIP) *networkv1.ElasticIp {
-	out := &networkv1.ElasticIp{
-		Id:        string(e.ID),
-		ProjectId: string(p),
-		VpcId:     string(e.VPC),
-		Address:   e.Address.String(),
-		SubnetId:  string(e.Subnet),
-		Status:    toStatusValue(e.Status),
-	}
-	if e.Private.IsValid() {
-		out.PrivateAddress = e.Private.String()
-	}
-	return out
-}
-
-func toRule(r domain.Rule) *networkv1.Rule {
-	out := &networkv1.Rule{
-		Direction: toDirection(r.Direction),
-		Protocol:  toProtocol(r.Protocol),
-		FromPort:  r.FromPort,
-		ToPort:    r.ToPort,
-	}
-	if r.Peer.Group != "" {
-		out.Peer = &networkv1.Rule_SecurityGroupId{SecurityGroupId: string(r.Peer.Group)}
-		return out
-	}
-	out.Peer = &networkv1.Rule_CidrBlock{CidrBlock: r.Peer.CIDR.String()}
-	return out
-}
-
-func toDirection(d domain.Direction) networkv1.Direction {
-	switch d {
-	case domain.Ingress:
-		return networkv1.Direction_DIRECTION_INGRESS
-	case domain.Egress:
-		return networkv1.Direction_DIRECTION_EGRESS
-	default:
-		return networkv1.Direction_DIRECTION_UNSPECIFIED
-	}
-}
-
-func toProtocol(p domain.Protocol) networkv1.Protocol {
-	switch p {
-	case domain.TCP:
-		return networkv1.Protocol_PROTOCOL_TCP
-	case domain.UDP:
-		return networkv1.Protocol_PROTOCOL_UDP
-	case domain.ICMP:
-		return networkv1.Protocol_PROTOCOL_ICMP
-	case domain.All:
-		return networkv1.Protocol_PROTOCOL_ALL
-	default:
-		return networkv1.Protocol_PROTOCOL_UNSPECIFIED
-	}
+	return nil
 }

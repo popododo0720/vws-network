@@ -24,9 +24,9 @@
 | 멱등 지문은 요청의 JSON 이름으로 계산한다. | 요청 구조체의 `json` 태그, `TestRequestJSONNames` |
 | 데이터플레인 구현은 가짜 하나이고, 다른 패키지에서 호출할 수 없다. | 비공개 `dataplane`, `fakeDataplane`, `var _ dataplane = (*fakeDataplane)(nil)` |
 | RPC를 추가하면 핸들러를 비워 둘 수 없다. | `TestHandlersOverrideUnimplemented` |
-| 연산 타입 문자열은 RPC 이름과 같다. | `domain.OperationTypes`, `TestOperationTypesAreRPCNames` |
+| VPC, 서브넷, 보안 그룹의 생성, 수정, 삭제 연산 타입 문자열은 RPC 이름과 같다. | `domain.OpCreateVPC`, `domain.OpUpdateVPC`, `domain.OpDeleteVPC`와 같은 상수, `TestOperationTypesAreRPCNames` |
 | 도메인 오류 종류는 모두 gRPC 코드로 바뀐다. | `toStatus`, `TestAllErrKindsMapped` |
-| proto는 공유 저장소로 옮기기 전까지 임시 표시를 유지한다. | `TestProtoIsTemporary` |
+| proto는 `third_party/vws-proto`로 두고 `go.mod` replace가 그 모듈을 가리킨다. | `TestVWSProtoIsReplaced` |
 | 배포 매니페스트와 상표 고지를 넣지 않는다. | `TestNoDeployment`, `TestNoBrandNotice` |
 | 포맷, 테스트, 린트가 통과해야 한다. | `.github/workflows/ci.yml`의 `gofmt`, `go test ./...`, `golangci-lint` |
 | `main`에 직접 푸시하지 않고, 커밋은 원자적으로 나눈다. | 아래 절차. 브랜치 보호는 저장소 설정이다. |
