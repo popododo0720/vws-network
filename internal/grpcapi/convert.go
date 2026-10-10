@@ -2,6 +2,7 @@ package grpcapi
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -184,11 +185,20 @@ func addressName(project, region, id string) string {
 }
 
 func callOf(project, requestID, resourceID string) domain.Call {
+	return callDry(project, requestID, resourceID, false)
+}
+
+func callDry(project, requestID, resourceID string, dry bool) domain.Call {
 	key := requestID
 	if key == "" {
-		key = resourceID
+		var b [16]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			key = "req-" + resourceID + "-" + hex.EncodeToString(b[:])
+		} else {
+			key = "req-" + hex.EncodeToString(b[:])
+		}
 	}
-	return domain.Call{Project: domain.ProjectID(project), Key: domain.IdempotencyKey(key)}
+	return domain.Call{Project: domain.ProjectID(project), Key: domain.IdempotencyKey(key), DryRun: dry}
 }
 
 func rejectText(labels map[string]string, description string) error {
@@ -210,6 +220,17 @@ func maskPaths(mask *fieldmaskpb.FieldMask) []string {
 		return []string{"spec", "labels"}
 	}
 	return mask.GetPaths()
+}
+
+func maskTouches(mask *fieldmaskpb.FieldMask, paths ...string) bool {
+	for _, path := range maskPaths(mask) {
+		for _, want := range paths {
+			if path == want || strings.HasPrefix(path, want+".") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func allowPath(path string, ok ...string) error {

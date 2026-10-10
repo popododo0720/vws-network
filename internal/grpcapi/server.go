@@ -58,13 +58,7 @@ func (h *handler) CreateVpc(ctx context.Context, req *networkv1.CreateVpcRequest
 	if err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		if err := domain.CheckVPCCIDR(cidr); err != nil {
-			return nil, toStatus(err, req.GetRequestId())
-		}
-		return validateOp(project, req.GetVpcId()), nil
-	}
-	op, err := h.svc.CreateVPC(ctx, callOf(project, req.GetRequestId(), req.GetVpcId()), domain.CreateVPC{
+	op, err := h.svc.CreateVPC(ctx, callDry(project, req.GetRequestId(), req.GetVpcId(), req.GetValidateOnly()), domain.CreateVPC{
 		CIDR: cidr, ID: domain.VPCID(req.GetVpcId()), Region: region,
 	})
 	if err != nil {
@@ -87,18 +81,18 @@ func (h *handler) UpdateVpc(ctx context.Context, req *networkv1.UpdateVpcRequest
 	if err != nil {
 		return nil, err
 	}
-	cidr, err := vpcSpec(req.GetVpc())
-	if err != nil {
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.ipv4_cidr")
+	var cidr netip.Prefix
+	if touch {
+		cidr, err = vpcSpec(req.GetVpc())
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetVpc().GetLabels(), req.GetVpc().GetSpec().GetDescription(), req.GetVpc().GetEtag()); err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		if err := domain.CheckVPCCIDR(cidr); err != nil {
-			return nil, toStatus(err, req.GetRequestId())
-		}
-		return validateOp(n.Project, n.ID), nil
-	}
-	op, err := h.svc.UpdateVPC(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.CreateVPC{
-		CIDR: cidr, ID: domain.VPCID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(),
+	op, err := h.svc.UpdateVPC(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateVPC{
+		CIDR: cidr, ID: domain.VPCID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -209,10 +203,7 @@ func (h *handler) CreateSubnet(ctx context.Context, req *networkv1.CreateSubnetR
 	if err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		return validateOp(parent.Project, req.GetSubnetId()), nil
-	}
-	op, err := h.svc.CreateSubnet(ctx, callOf(parent.Project, req.GetRequestId(), req.GetSubnetId()), domain.CreateSubnet{
+	op, err := h.svc.CreateSubnet(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSubnetId(), req.GetValidateOnly()), domain.CreateSubnet{
 		VPC: domain.VPCID(parent.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(req.GetSubnetId()), Region: parent.Region,
 	})
 	if err != nil {
@@ -235,15 +226,19 @@ func (h *handler) UpdateSubnet(ctx context.Context, req *networkv1.UpdateSubnetR
 	if err != nil {
 		return nil, err
 	}
-	cidr, zone, err := subnetSpec(req.GetSubnet())
-	if err != nil {
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.zone", "spec.ipv4_cidr")
+	var cidr netip.Prefix
+	var zone string
+	if touch {
+		cidr, zone, err = subnetSpec(req.GetSubnet())
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetSubnet().GetLabels(), req.GetSubnet().GetSpec().GetDescription(), req.GetSubnet().GetEtag()); err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		return validateOp(n.Project, n.ID), nil
-	}
-	op, err := h.svc.UpdateSubnet(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.CreateSubnet{
-		VPC: domain.VPCID(n.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(),
+	op, err := h.svc.UpdateSubnet(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSubnet{
+		VPC: domain.VPCID(n.VPC), CIDR: cidr, Zone: zone, ID: domain.SubnetID(n.ID), Region: n.Region, AllowMissing: req.GetAllowMissing(), Keep: !touch,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -353,15 +348,7 @@ func (h *handler) CreateSecurityGroup(ctx context.Context, req *networkv1.Create
 	if err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		if len(rules) > 0 {
-			if _, err := domain.CanonicalRules(rules); err != nil {
-				return nil, toStatus(err, req.GetRequestId())
-			}
-		}
-		return validateOp(parent.Project, req.GetSecurityGroupId()), nil
-	}
-	op, err := h.svc.CreateSecurityGroup(ctx, callOf(parent.Project, req.GetRequestId(), req.GetSecurityGroupId()), domain.CreateSecurityGroup{
+	op, err := h.svc.CreateSecurityGroup(ctx, callDry(parent.Project, req.GetRequestId(), req.GetSecurityGroupId(), req.GetValidateOnly()), domain.CreateSecurityGroup{
 		VPC: domain.VPCID(parent.VPC), Name: req.GetSecurityGroupId(), ID: domain.SecurityGroupID(req.GetSecurityGroupId()),
 		Region: parent.Region, Rules: rules, ReplaceRules: true,
 	})
@@ -385,16 +372,19 @@ func (h *handler) UpdateSecurityGroup(ctx context.Context, req *networkv1.Update
 	if err != nil {
 		return nil, err
 	}
-	rules, err := groupSpec(req.GetSecurityGroup(), n.Project, n.Region, n.VPC)
-	if err != nil {
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.rules")
+	var rules []domain.Rule
+	if touch {
+		rules, err = groupSpec(req.GetSecurityGroup(), n.Project, n.Region, n.VPC)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := rejectResource(req.GetSecurityGroup().GetLabels(), req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetEtag()); err != nil {
 		return nil, err
 	}
-	if req.GetValidateOnly() {
-		return validateOp(n.Project, n.ID), nil
-	}
-	op, err := h.svc.UpdateSecurityGroup(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.CreateSecurityGroup{
+	op, err := h.svc.UpdateSecurityGroup(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSecurityGroup{
 		VPC: domain.VPCID(n.VPC), Name: n.ID, ID: domain.SecurityGroupID(n.ID), Region: n.Region,
-		Rules: rules, ReplaceRules: true, AllowMissing: req.GetAllowMissing(),
+		Rules: rules, ReplaceRules: touch, AllowMissing: req.GetAllowMissing(), KeepRules: !touch,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -523,17 +513,19 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 	if err != nil {
 		return nil, err
 	}
-	if err := addressSpec(req.GetAddress()); err != nil {
+	touch := maskTouches(req.GetUpdateMask(), "spec", "spec.association")
+	if touch {
+		if err := addressSpec(req.GetAddress()); err != nil {
+			return nil, err
+		}
+		if req.GetAddress().GetSpec().GetAssociation() != nil {
+			return nil, invalidSpec("association names a compute instance")
+		}
+	} else if err := rejectResource(req.GetAddress().GetLabels(), "", req.GetAddress().GetEtag()); err != nil {
 		return nil, err
 	}
-	if req.GetAddress().GetSpec().GetAssociation() != nil {
-		return nil, invalidSpec("association names a compute instance")
-	}
-	if req.GetValidateOnly() {
-		return validateOp(n.Project, n.ID), nil
-	}
-	op, err := h.svc.DisassociateElasticIP(ctx, callOf(n.Project, req.GetRequestId(), n.ID), domain.DisassociateElasticIP{
-		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region,
+	op, err := h.svc.DisassociateElasticIP(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.DisassociateElasticIP{
+		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region, Keep: !touch,
 	})
 	if err != nil {
 		return nil, toStatus(err, req.GetRequestId())
@@ -685,6 +677,13 @@ func addressSpec(a *networkv1.Address) error {
 		return invalidSpec("ip_version must be ipv4")
 	}
 	return nil
+}
+
+func rejectResource(labels map[string]string, description, etag string) error {
+	if err := rejectText(labels, description); err != nil {
+		return err
+	}
+	return rejectEtag(etag)
 }
 
 func checkMask(mask *fieldmaskpb.FieldMask, allowed ...string) error {

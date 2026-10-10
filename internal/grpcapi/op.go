@@ -15,13 +15,6 @@ import (
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
-func validateOp(project, id string) *longrunningpb.Operation {
-	return &longrunningpb.Operation{
-		Name: "projects/" + project + "/operations/validate-" + id,
-		Done: true,
-	}
-}
-
 func (h *handler) toOp(project, requestID, resourceName string, verb commonv1.OperationVerb, op domain.Operation) (*longrunningpb.Operation, error) {
 	meta, err := anypb.New(&commonv1.OperationMetadata{
 		Resource:  resourceName,

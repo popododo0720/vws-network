@@ -21,9 +21,11 @@ type SecurityGroupID string
 type ElasticIPID string
 
 // Call is the project and idempotency key on every mutation.
+// DryRun checks the mutation and writes nothing.
 type Call struct {
 	Project ProjectID
 	Key     IdempotencyKey
+	DryRun  bool
 }
 
 // Validate rejects an empty project or key, and a key longer than 128 bytes.
@@ -136,15 +138,17 @@ type CreateVPC struct {
 	ID           VPCID        `json:"id,omitempty"`
 	Region       string       `json:"region,omitempty"`
 	AllowMissing bool         `json:"-"`
+	// Keep leaves the stored spec alone. It is not part of the fingerprint;
+	// the service fingerprints a separate body so an empty CIDR is not marshaled.
+	Keep bool `json:"-"`
 }
 
 // DeleteVPC names the VPC to remove.
-// RejectMissing and Region are not part of the idempotency fingerprint.
-// Empty Region skips the region check.
+// Empty Region skips the region check. Region is part of the fingerprint.
 type DeleteVPC struct {
 	VPC           VPCID  `json:"vpc"`
-	RejectMissing bool   `json:"-"`
-	Region        string `json:"-"`
+	RejectMissing bool   `json:"reject_missing,omitempty"`
+	Region        string `json:"region,omitempty"`
 }
 
 // CreateSubnet is the request body of a subnet create.
@@ -155,15 +159,16 @@ type CreateSubnet struct {
 	ID           SubnetID     `json:"id,omitempty"`
 	Region       string       `json:"region,omitempty"`
 	AllowMissing bool         `json:"-"`
+	Keep         bool         `json:"-"`
 }
 
 // DeleteSubnet names the subnet to remove.
-// RejectMissing, VPC, and Region are not part of the idempotency fingerprint.
+// Empty VPC or Region skips that check. Both are part of the fingerprint.
 type DeleteSubnet struct {
 	Subnet        SubnetID `json:"subnet"`
-	RejectMissing bool     `json:"-"`
-	VPC           VPCID    `json:"-"`
-	Region        string   `json:"-"`
+	RejectMissing bool     `json:"reject_missing,omitempty"`
+	VPC           VPCID    `json:"vpc,omitempty"`
+	Region        string   `json:"region,omitempty"`
 }
 
 // CreateSecurityGroup is the request body of a security group create.
@@ -178,15 +183,17 @@ type CreateSecurityGroup struct {
 	// ReplaceRules clears the starting egress rule when Rules is empty.
 	// It is not part of the idempotency fingerprint.
 	ReplaceRules bool `json:"-"`
+	// KeepRules leaves stored rules alone. It is part of the fingerprint.
+	KeepRules bool `json:"keep_rules,omitempty"`
 }
 
 // DeleteSecurityGroup names the group to remove.
-// RejectMissing, VPC, and Region are not part of the idempotency fingerprint.
+// Empty VPC or Region skips that check. Both are part of the fingerprint.
 type DeleteSecurityGroup struct {
 	Group         SecurityGroupID `json:"group"`
-	RejectMissing bool            `json:"-"`
-	VPC           VPCID           `json:"-"`
-	Region        string          `json:"-"`
+	RejectMissing bool            `json:"reject_missing,omitempty"`
+	VPC           VPCID           `json:"vpc,omitempty"`
+	Region        string          `json:"region,omitempty"`
 }
 
 // AuthorizeRules adds rules to a group. Rules are canonical before the call.
@@ -209,11 +216,11 @@ type AllocateElasticIP struct {
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
-// RejectMissing and Region are not part of the idempotency fingerprint.
+// Empty Region skips the region check. Region is part of the fingerprint.
 type ReleaseElasticIP struct {
 	ElasticIP     ElasticIPID `json:"elastic_ip"`
-	RejectMissing bool        `json:"-"`
-	Region        string      `json:"-"`
+	RejectMissing bool        `json:"reject_missing,omitempty"`
+	Region        string      `json:"region,omitempty"`
 }
 
 // AssociateElasticIP binds an elastic IP to a private address.
@@ -224,12 +231,14 @@ type AssociateElasticIP struct {
 }
 
 // DisassociateElasticIP clears an association.
-// AllowMissing rejects creation of a missing address. The flags and Region stay out of the fingerprint.
+// AllowMissing rejects creation of a missing address.
+// Keep leaves an existing association alone. Empty Region skips the region check.
 type DisassociateElasticIP struct {
 	ElasticIP     ElasticIPID `json:"elastic_ip"`
-	RejectMissing bool        `json:"-"`
-	AllowMissing  bool        `json:"-"`
-	Region        string      `json:"-"`
+	RejectMissing bool        `json:"reject_missing,omitempty"`
+	AllowMissing  bool        `json:"allow_missing,omitempty"`
+	Region        string      `json:"region,omitempty"`
+	Keep          bool        `json:"keep,omitempty"`
 }
 
 // OperationType is the RPC name that accepted the operation.
@@ -263,6 +272,33 @@ func OperationTypes() []OperationType {
 		OpAuthorizeRules, OpRevokeRules,
 		OpAllocateElasticIP, OpReleaseElasticIP,
 		OpAssociateElasticIP, OpDisassociateElasticIP,
+	}
+}
+
+// ResourceKind is the map an operation's resource id belongs to.
+type ResourceKind int
+
+const (
+	KindVPC ResourceKind = iota + 1
+	KindSubnet
+	KindGroup
+	KindAddress
+)
+
+// KindOf maps an operation to the resource it names.
+// Client ids are not unique across kinds, so reconcile must not guess from the id.
+func KindOf(typ OperationType) ResourceKind {
+	switch typ {
+	case OpCreateVPC, OpUpdateVPC, OpDeleteVPC:
+		return KindVPC
+	case OpCreateSubnet, OpUpdateSubnet, OpDeleteSubnet:
+		return KindSubnet
+	case OpCreateSecurityGroup, OpUpdateSecurityGroup, OpDeleteSecurityGroup, OpAuthorizeRules, OpRevokeRules:
+		return KindGroup
+	case OpAllocateElasticIP, OpReleaseElasticIP, OpAssociateElasticIP, OpDisassociateElasticIP:
+		return KindAddress
+	default:
+		return 0
 	}
 }
 

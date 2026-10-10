@@ -172,19 +172,28 @@ func (s *Service) UpdateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	if r.ID == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
-	if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
-		return domain.Operation{}, err
+	if !r.Keep {
+		if err := domain.CheckVPCCIDR(r.CIDR); err != nil {
+			return domain.Operation{}, err
+		}
 	}
 	sg := s.newID("sg-")
-	return s.mutate(ctx, c, domain.OpUpdateVPC, string(r.ID), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+	body := any(r)
+	if r.Keep {
+		body = keepBody{ID: string(r.ID), Region: r.Region, Keep: true}
+	}
+	return s.mutate(ctx, c, domain.OpUpdateVPC, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if v, ok := st.VPCs[r.ID]; ok {
 			if otherName(v.Region, r.Region, "", "") {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
 			}
-			if v.CIDR != r.CIDR {
-				return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
+			if r.Keep || v.CIDR == r.CIDR {
+				return false, nil
 			}
-			return false, nil
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
+		}
+		if r.Keep {
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "vpc spec is required"}
 		}
 		if !r.AllowMissing {
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "vpc not found"}
@@ -232,13 +241,20 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 
 // UpdateSubnet rejects a CIDR or zone change. An identical spec is a succeeded no-op.
 func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.CreateSubnet) (domain.Operation, error) {
-	if r.ID == "" || r.VPC == "" || r.Zone == "" || !r.CIDR.IsValid() {
+	if r.ID == "" || r.VPC == "" || (!r.Keep && (r.Zone == "" || !r.CIDR.IsValid())) {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
-	return s.mutate(ctx, c, domain.OpUpdateSubnet, string(r.ID), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+	body := any(r)
+	if r.Keep {
+		body = keepBody{ID: string(r.ID), Region: r.Region, Parent: string(r.VPC), Keep: true}
+	}
+	return s.mutate(ctx, c, domain.OpUpdateSubnet, string(r.ID), body, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		if sub, ok := st.Subnets[r.ID]; ok {
 			if otherName(sub.Region, r.Region, sub.VPC, r.VPC) {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
+			}
+			if r.Keep {
+				return false, nil
 			}
 			if sub.CIDR != r.CIDR {
 				return false, &domain.Error{Kind: domain.Invalid, Msg: "ipv4_cidr is immutable"}
@@ -248,7 +264,10 @@ func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 			}
 			return false, nil
 		}
-		if !r.AllowMissing {
+		if r.Keep || !r.AllowMissing {
+			if r.Keep {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
+			}
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
 		}
 		return true, st.CreateSubnet(r.ID, r)
@@ -338,6 +357,9 @@ func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r doma
 			if !r.AllowMissing {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
 			}
+			if r.KeepRules {
+				return false, &domain.Error{Kind: domain.Invalid, Msg: "security group spec is required"}
+			}
 			if err := st.CreateSecurityGroup(r.ID, r); err != nil {
 				return false, err
 			}
@@ -355,6 +377,9 @@ func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r doma
 		}
 		if g.Default {
 			return false, &domain.Error{Kind: domain.Precondition, Msg: "default security group cannot be changed"}
+		}
+		if r.KeepRules {
+			return false, nil
 		}
 		return syncRules(st, g, rules)
 	})
@@ -472,8 +497,19 @@ func (s *Service) DisassociateElasticIP(ctx context.Context, c domain.Call, r do
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
 			}
 		}
+		if r.Keep {
+			return false, nil
+		}
 		return st.DisassociateElasticIP(r)
 	})
+}
+
+// keepBody is the fingerprint of an update that does not touch the spec.
+type keepBody struct {
+	ID     string `json:"id"`
+	Parent string `json:"parent,omitempty"`
+	Region string `json:"region,omitempty"`
+	Keep   bool   `json:"keep"`
 }
 
 // otherName reports that a stored resource is not the one named by the request.
@@ -752,11 +788,17 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 		if err != nil {
 			return domain.Operation{}, err
 		}
+		if c.DryRun {
+			return domain.Operation{
+				ID: "validate-" + resource, Project: c.Project, Type: typ, Resource: resource,
+				State: domain.OpSucceeded, Key: c.Key,
+			}, nil
+		}
 		op := domain.Operation{
 			ID: s.newID("op-"), Project: c.Project, Type: typ, Resource: resource,
 			State: domain.OpPending, Key: c.Key,
 		}
-		lane, _ := clone.Lane(resource)
+		lane, _ := clone.LaneKind(domain.KindOf(typ), resource)
 		enq := &job{op: op, fingerprint: fp, lane: lane}
 		cmt := commit{project: c.Project, enqueue: enq}
 		if write {
@@ -898,7 +940,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	observed := st.Clone()
-	if err := s.converge(ctx, observed, j.op.Resource); err != nil {
+	if err := s.converge(ctx, observed, j.op.Type, j.op.Resource); err != nil {
 		if err := s.failOrRetry(ctx, j, err); err != nil {
 			return false, err
 		}
@@ -911,7 +953,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		cur.Settle(j.op.Resource, observed)
+		cur.SettleKind(domain.KindOf(j.op.Type), j.op.Resource, observed)
 		done := j
 		done.op.State = domain.OpSucceeded
 		done.op.Err = nil
@@ -951,7 +993,7 @@ func (s *Service) failJob(ctx context.Context, j job, cause error) error {
 		if err != nil {
 			return err
 		}
-		cur.Fail(j.op.Resource)
+		cur.FailKind(domain.KindOf(j.op.Type), j.op.Resource)
 		done := j
 		done.op.State = domain.OpFailed
 		done.op.Err = de
@@ -967,13 +1009,14 @@ func (s *Service) failJob(ctx context.Context, j job, cause error) error {
 	return last
 }
 
-func (s *Service) converge(ctx context.Context, observed domain.State, id string) error {
-	actions, found, err := observed.Plan(id)
+func (s *Service) converge(ctx context.Context, observed domain.State, typ domain.OperationType, id string) error {
+	kind := domain.KindOf(typ)
+	actions, found, err := observed.PlanKind(kind, id)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return s.deleteByID(ctx, id)
+		return s.deleteByKind(ctx, kind, id)
 	}
 	for _, action := range actions {
 		if err := s.exec(ctx, action); err != nil {
@@ -1011,6 +1054,21 @@ func (s *Service) exec(ctx context.Context, a domain.Action) error {
 		return s.dp.deleteNAT(ctx, a.EIP, a.Addr)
 	default:
 		return &domain.Error{Kind: domain.Dataplane, Msg: "unknown dataplane action"}
+	}
+}
+
+func (s *Service) deleteByKind(ctx context.Context, kind domain.ResourceKind, id string) error {
+	switch kind {
+	case domain.KindVPC:
+		return s.dp.deleteVPC(ctx, domain.VPC{ID: domain.VPCID(id)})
+	case domain.KindSubnet:
+		return s.dp.deleteSubnet(ctx, domain.Subnet{ID: domain.SubnetID(id)})
+	case domain.KindGroup:
+		return s.dp.deleteGroup(ctx, domain.SecurityGroup{ID: domain.SecurityGroupID(id)})
+	case domain.KindAddress:
+		return s.dp.deleteElasticIP(ctx, domain.ElasticIP{ID: domain.ElasticIPID(id)})
+	default:
+		return s.deleteByID(ctx, id)
 	}
 }
 

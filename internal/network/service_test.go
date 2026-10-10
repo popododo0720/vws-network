@@ -38,6 +38,7 @@ func TestServiceAgainstStores(t *testing.T) {
 			t.Run("delete children of failed vpc", func(t *testing.T) { testDeleteChildrenOfFailedVPC(t, opener.open(t)) })
 			t.Run("cross vpc peer", func(t *testing.T) { testCrossVPCPeerIsNotFound(t, opener.open(t)) })
 			t.Run("other region leaves the vpc", func(t *testing.T) { testOtherRegionLeavesVPC(t, opener.open(t)) })
+			t.Run("client id converges", func(t *testing.T) { testClientIDConverges(t, opener.open(t)) })
 		})
 	}
 }
@@ -697,6 +698,66 @@ func testOtherRegionLeavesVPC(t *testing.T, repo repository) {
 	}
 	if _, err := svc.GetVPC(ctx, "proj", "app"); err != nil {
 		t.Fatal(err)
+	}
+	_, err = svc.DeleteVPC(ctx, call("proj", "k"), domain.DeleteVPC{VPC: "app", Region: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.DeleteVPC(ctx, call("proj", "k"), domain.DeleteVPC{VPC: "app", Region: "r1", RejectMissing: true})
+	if kind(err) != domain.Conflict {
+		t.Fatalf("reused key other region = %v", err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", "app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testClientIDConverges(t *testing.T, repo repository) {
+	t.Helper()
+	svc, fake := openTest(t, repo)
+	ctx := context.Background()
+	created, err := svc.CreateVPC(ctx, call("proj", "v"), domain.CreateVPC{CIDR: mustP("10.30.0.0/16"), ID: "app", Region: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := svc.DeleteVPC(ctx, call("proj", "del"), domain.DeleteVPC{VPC: "app", Region: "r1", RejectMissing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if op, err := svc.GetOperation(ctx, "proj", created.ID); err != nil || op.State != domain.OpSucceeded {
+		t.Fatalf("create after delete %+v err %v", op, err)
+	}
+	if op, err := svc.GetOperation(ctx, "proj", deleted.ID); err != nil || op.State != domain.OpSucceeded {
+		t.Fatalf("delete %+v err %v", op, err)
+	}
+	if _, err := svc.GetVPC(ctx, "proj", "app"); kind(err) != domain.NotFound {
+		t.Fatalf("vpc err = %v", err)
+	}
+	if fake.has("vpc/app") {
+		t.Fatal("dataplane kept the vpc")
+	}
+
+	if _, err := svc.CreateVPC(ctx, call("proj", "v2"), domain.CreateVPC{CIDR: mustP("10.32.0.0/16"), ID: "web", Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSubnet(ctx, call("proj", "s"), domain.CreateSubnet{VPC: "web", CIDR: mustP("10.32.1.0/24"), Zone: "az1", ID: "web", Region: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSubnet(ctx, call("proj", "bad"), domain.CreateSubnet{VPC: "web", CIDR: mustP("10.32.2.0/24"), Zone: "az1", ID: "other", Region: "r2"}); kind(err) != domain.NotFound {
+		t.Fatalf("other region subnet = %v", err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := svc.GetSubnet(ctx, "proj", "web")
+	if err != nil || sub.Status != domain.StatusAvailable {
+		t.Fatalf("subnet %+v err %v", sub, err)
+	}
+	if !fake.has("subnet/web") || !fake.has("vpc/web") {
+		t.Fatal("dataplane missed a client id")
 	}
 }
 

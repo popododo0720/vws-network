@@ -11,11 +11,7 @@ linters:
       - legacy
       - std-error-handling
     paths:
-      - gen
-      - third_party
-      - third_party$
-      - builtin$
-      - examples$
+      - third_party/
 formatters:
   enable:
     - gofmt
@@ -27,8 +23,4 @@ formatters:
   exclusions:
     generated: lax
     paths:
-      - gen
-      - third_party
-      - third_party$
-      - builtin$
-      - examples$
+      - third_party/
