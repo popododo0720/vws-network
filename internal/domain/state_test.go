@@ -612,3 +612,82 @@ func projectWithSubnet(t *testing.T) State {
 	}
 	return s
 }
+
+func TestElasticIPInstanceAssociation(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	pool := mustPrefix(t, "198.51.100.0/24")
+	free := func(netip.Addr) bool { return false }
+	const instance = "projects/p/zones/z1/instances/i1"
+	if err := s.AllocateElasticIP("eip-1", AllocateElasticIP{VPC: "vpc-1", Instance: instance, Device: "nic0"}, pool, free); err != nil {
+		t.Fatal(err)
+	}
+	if e := s.ElasticIPs["eip-1"]; e.Instance != instance || e.Device != "nic0" {
+		t.Fatalf("stored attachment = %q %q", e.Instance, e.Device)
+	}
+	before := s.Clone()
+	if err := s.AllocateElasticIP("eip-2", AllocateElasticIP{VPC: "vpc-1", Instance: instance, Device: "nic0"}, pool, free); kindOf(err) != Invalid {
+		t.Fatalf("second address on one interface err = %v", err)
+	}
+	if err := s.AllocateElasticIP("eip-2", AllocateElasticIP{VPC: "vpc-1", Instance: instance}, pool, free); kindOf(err) != Invalid {
+		t.Fatalf("half attachment err = %v", err)
+	}
+	if !reflect.DeepEqual(s, before) {
+		t.Fatal("rejected allocate mutated state")
+	}
+	if err := s.AllocateElasticIP("eip-2", AllocateElasticIP{VPC: "vpc-1"}, pool, free); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.SetElasticIPAssociation("eip-2", instance, "nic0"); kindOf(err) != Invalid || changed {
+		t.Fatalf("attach to a taken interface = %v, %v", changed, err)
+	}
+	if changed, err := s.SetElasticIPAssociation("eip-2", instance, "nic1"); err != nil || !changed {
+		t.Fatalf("attach to a free interface = %v, %v", changed, err)
+	}
+	if changed, err := s.SetElasticIPAssociation("eip-2", instance, "nic1"); err != nil || changed {
+		t.Fatalf("same attachment again = %v, %v", changed, err)
+	}
+	if _, err := s.ReleaseElasticIP(ReleaseElasticIP{ElasticIP: "eip-2"}); kindOf(err) != Precondition {
+		t.Fatalf("release while attached err = %v", err)
+	}
+	if changed, err := s.SetElasticIPAssociation("eip-2", "", ""); err != nil || !changed {
+		t.Fatalf("clear = %v, %v", changed, err)
+	}
+	if changed, err := s.SetElasticIPAssociation("eip-2", "", ""); err != nil || changed {
+		t.Fatalf("clear again = %v, %v", changed, err)
+	}
+	if changed, err := s.ReleaseElasticIP(ReleaseElasticIP{ElasticIP: "eip-2"}); err != nil || !changed {
+		t.Fatalf("release after clear = %v, %v", changed, err)
+	}
+	// A deleting address still holds its interface until it is removed.
+	if _, err := s.ReleaseElasticIP(ReleaseElasticIP{ElasticIP: "eip-1"}); kindOf(err) != Precondition {
+		t.Fatalf("release attached eip-1 err = %v", err)
+	}
+	if err := s.AssociateElasticIP(AssociateElasticIP{ElasticIP: "eip-1", Private: netip.MustParseAddr("10.0.0.4")}); kindOf(err) != Precondition {
+		t.Fatalf("private bind while attached err = %v", err)
+	}
+}
+
+func TestElasticIPAssociationSurvivesEncoding(t *testing.T) {
+	var s State
+	if err := s.CreateVPC("vpc-1", "sg-1", CreateVPC{CIDR: mustPrefix(t, "10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	const instance = "projects/p/zones/z1/instances/i1"
+	if err := s.AllocateElasticIP("eip-1", AllocateElasticIP{VPC: "vpc-1", Instance: instance, Device: "nic0"}, mustPrefix(t, "198.51.100.0/24"), func(netip.Addr) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := MarshalState(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalState(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := got.ElasticIPs["eip-1"]; e.Instance != instance || e.Device != "nic0" {
+		t.Fatalf("decoded attachment = %q %q", e.Instance, e.Device)
+	}
+}

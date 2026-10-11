@@ -304,11 +304,63 @@ func (s *State) AllocateElasticIP(id ElasticIPID, r AllocateElasticIP, pool neti
 	if !ok {
 		return exhausted("elastic ip pool is exhausted")
 	}
-	s.ElasticIPs[id] = ElasticIP{
+	e := ElasticIP{
 		ID: id, VPC: r.VPC, Address: addr, Region: r.Region, Status: StatusPending,
 		Labels: copyLabels(r.Labels),
 	}
+	if r.Instance != "" || r.Device != "" {
+		if err := s.checkInterface(e, r.Instance, r.Device); err != nil {
+			return err
+		}
+		e.Instance, e.Device = r.Instance, r.Device
+	}
+	s.ElasticIPs[id] = e
 	return nil
+}
+
+// checkInterface rejects an empty half of an attachment, and an interface that
+// another address in the region already holds. Addresses being deleted still
+// count until they are removed. e itself is excluded.
+func (s *State) checkInterface(e ElasticIP, instance, device string) error {
+	if instance == "" || device == "" {
+		return invalid("instance and device name are required together")
+	}
+	for _, other := range s.ElasticIPs {
+		if other.ID != e.ID && other.Instance == instance && other.Device == device && other.Region == e.Region {
+			return invalid("network interface already has an address")
+		}
+	}
+	return nil
+}
+
+// SetElasticIPAssociation attaches the address to an instance interface, or
+// clears the attachment when both are empty. The same attachment again is a
+// no-op. A private address bound through AssociateElasticIP is released.
+func (s *State) SetElasticIPAssociation(id ElasticIPID, instance, device string) (bool, error) {
+	s.init()
+	e, ok := s.ElasticIPs[id]
+	if !ok {
+		return false, notFound("elastic ip not found")
+	}
+	if e.Instance == instance && e.Device == device && (instance != "" || !e.Private.IsValid()) {
+		return false, nil
+	}
+	if err := usable(e.Status); err != nil {
+		return false, err
+	}
+	if instance != "" || device != "" {
+		if err := s.checkInterface(e, instance, device); err != nil {
+			return false, err
+		}
+	}
+	if e.Private.IsValid() {
+		e.detaching = append(copyAddrs(e.detaching), e.Private)
+		e.Private = netip.Addr{}
+		e.Subnet = ""
+	}
+	e.Instance, e.Device = instance, device
+	s.ElasticIPs[id] = e
+	return true, nil
 }
 
 // AssociateElasticIP binds eip to a usable host in exactly one subnet of its VPC.
@@ -327,6 +379,9 @@ func (s *State) AssociateElasticIP(r AssociateElasticIP) error {
 	}
 	if len(e.detaching) > 0 {
 		return precondition("elastic ip is disassociating")
+	}
+	if e.Instance != "" {
+		return precondition("elastic ip is attached to an instance")
 	}
 	var (
 		subnet Subnet
@@ -454,7 +509,7 @@ func (s *State) ReleaseElasticIP(r ReleaseElasticIP) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if e.Private.IsValid() || len(e.detaching) > 0 {
+	if e.Private.IsValid() || e.Instance != "" || len(e.detaching) > 0 {
 		return false, precondition("elastic ip is associated")
 	}
 	e.Status = StatusDeleting

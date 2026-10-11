@@ -500,3 +500,143 @@ func waitDone(t *testing.T, ctx context.Context, ops longrunningpb.OperationsCli
 	}
 	t.Fatal("operation did not finish")
 }
+
+func TestAddressVPCAndAssociation(t *testing.T) {
+	ctx := context.Background()
+	svc, err := network.Open(ctx, network.Config{
+		DatabasePath: filepath.Join(t.TempDir(), "net.db"),
+		AddressPool:  netip.MustParsePrefix("198.51.100.0/24"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	conn := serve(t, svc)
+	defer conn.Close()
+	vpcs := networkv1.NewVpcServiceClient(conn)
+	addrs := networkv1.NewAddressServiceClient(conn)
+	parent := "projects/a1001/regions/r1"
+	vpcName := parent + "/vpcs/app"
+	const (
+		instance = "projects/a1001/zones/z1/instances/i1"
+		other    = "projects/a1001/zones/z1/instances/i2"
+	)
+	if _, err := vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "app",
+		Vpc: &networkv1.Vpc{Spec: &networkv1.VpcSpec{Ipv4Cidr: "10.70.0.0/16"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(id string, spec *networkv1.AddressSpec) error {
+		spec.IpVersion = networkv1.IpVersion_IP_VERSION_IPV4
+		_, err := addrs.CreateAddress(ctx, &networkv1.CreateAddressRequest{
+			Parent: parent, AddressId: id, Address: &networkv1.Address{Spec: spec},
+		})
+		return err
+	}
+	update := func(name string, spec *networkv1.AddressSpec, paths ...string) error {
+		spec.IpVersion = networkv1.IpVersion_IP_VERSION_IPV4
+		_, err := addrs.UpdateAddress(ctx, &networkv1.UpdateAddressRequest{
+			Address:    &networkv1.Address{Name: name, Spec: spec},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
+		})
+		return err
+	}
+	get := func(id string) *networkv1.Address {
+		t.Helper()
+		a, err := addrs.GetAddress(ctx, &networkv1.GetAddressRequest{Name: parent + "/addresses/" + id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+
+	if err := create("none", &networkv1.AddressSpec{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("create without vpc = %v", err)
+	}
+	if err := create("far", &networkv1.AddressSpec{Vpc: "projects/other/regions/r1/vpcs/app"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("create in another project's vpc = %v", err)
+	}
+	if err := create("far", &networkv1.AddressSpec{Vpc: "projects/a1001/regions/r2/vpcs/app"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("create in another region's vpc = %v", err)
+	}
+	if err := create("missing", &networkv1.AddressSpec{Vpc: parent + "/vpcs/nope"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("create in a missing vpc = %v", err)
+	}
+	if err := create("half", &networkv1.AddressSpec{
+		Vpc: vpcName, Association: &networkv1.AddressAssociation{Instance: instance},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("create with a half association = %v", err)
+	}
+	if err := create("eip", &networkv1.AddressSpec{Vpc: vpcName}); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("eip").GetSpec().GetVpc(); got != vpcName {
+		t.Fatalf("stored vpc = %q", got)
+	}
+
+	assoc := &networkv1.AddressAssociation{Instance: instance, DeviceName: "nic0"}
+	if err := update(parent+"/addresses/eip", &networkv1.AddressSpec{Association: assoc}, "spec.association"); err != nil {
+		t.Fatal(err)
+	}
+	a := get("eip")
+	if a.GetSpec().GetAssociation().GetInstance() != instance || a.GetStatus().GetDeviceName() != "nic0" || a.GetSpec().GetVpc() != vpcName {
+		t.Fatalf("attached address = %+v", a)
+	}
+	if err := create("second", &networkv1.AddressSpec{Vpc: vpcName, Association: assoc}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("second address on one interface = %v", err)
+	}
+	// An empty vpc under mask spec keeps the stored vpc; the mask spec replaces the attachment.
+	if err := update(parent+"/addresses/eip", &networkv1.AddressSpec{
+		Association: &networkv1.AddressAssociation{Instance: other, DeviceName: "nic0"},
+	}, "spec"); err != nil {
+		t.Fatal(err)
+	}
+	a = get("eip")
+	if a.GetSpec().GetVpc() != vpcName || a.GetSpec().GetAssociation().GetInstance() != other {
+		t.Fatalf("after spec update = %+v", a)
+	}
+	if err := update(parent+"/addresses/eip", &networkv1.AddressSpec{Vpc: parent + "/vpcs/app2"}, "spec"); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("vpc change = %v", err)
+	}
+	if got := get("eip").GetSpec().GetVpc(); got != vpcName {
+		t.Fatalf("vpc after rejected change = %q", got)
+	}
+	if err := update(parent+"/addresses/eip", &networkv1.AddressSpec{}, "spec.association"); err != nil {
+		t.Fatal(err)
+	}
+	a = get("eip")
+	if a.GetSpec().GetAssociation() != nil || a.GetStatus().GetInstance() != "" || a.GetSpec().GetVpc() != vpcName {
+		t.Fatalf("after clear = %+v", a)
+	}
+	// Labels only leave the attachment and vpc alone.
+	if err := update(parent+"/addresses/eip", &networkv1.AddressSpec{Association: assoc}, "spec.association"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addrs.UpdateAddress(ctx, &networkv1.UpdateAddressRequest{
+		Address:    &networkv1.Address{Name: parent + "/addresses/eip", Labels: map[string]string{"k": "v"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if a = get("eip"); a.GetSpec().GetAssociation().GetInstance() != instance || a.GetLabels()["k"] != "v" {
+		t.Fatalf("after label update = %+v", a)
+	}
+	if _, err := addrs.DeleteAddress(ctx, &networkv1.DeleteAddressRequest{Name: parent + "/addresses/eip"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("delete while attached = %v", err)
+	}
+	// allow_missing creates through the create rules and may set the vpc.
+	if _, err := addrs.UpdateAddress(ctx, &networkv1.UpdateAddressRequest{
+		Address: &networkv1.Address{
+			Name: parent + "/addresses/made",
+			Spec: &networkv1.AddressSpec{IpVersion: networkv1.IpVersion_IP_VERSION_IPV4, Vpc: vpcName},
+		},
+		UpdateMask:   &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+		AllowMissing: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("made").GetSpec().GetVpc(); got != vpcName {
+		t.Fatalf("created through update, vpc = %q", got)
+	}
+}

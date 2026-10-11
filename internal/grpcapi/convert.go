@@ -478,13 +478,22 @@ func toAddress(project, region string, e domain.ElasticIP) *networkv1.Address {
 	if use == "" {
 		use = region
 	}
+	spec := &networkv1.AddressSpec{IpVersion: networkv1.IpVersion_IP_VERSION_IPV4}
+	if e.VPC != "" {
+		spec.Vpc = vpcName(project, use, string(e.VPC))
+	}
+	if e.Instance != "" {
+		spec.Association = &networkv1.AddressAssociation{Instance: e.Instance, DeviceName: e.Device}
+	}
 	return &networkv1.Address{
 		Name:   addressName(project, use, string(e.ID)),
 		Labels: protoLabels(e.Labels),
-		Spec:   &networkv1.AddressSpec{IpVersion: networkv1.IpVersion_IP_VERSION_IPV4},
+		Spec:   spec,
 		Status: &networkv1.AddressStatus{
-			Observed: observed(e.Status),
-			Ipv4:     e.Address.String(),
+			Observed:   observed(e.Status),
+			Ipv4:       e.Address.String(),
+			Instance:   e.Instance,
+			DeviceName: e.Device,
 		},
 	}
 }
