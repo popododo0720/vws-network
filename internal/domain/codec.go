@@ -35,7 +35,8 @@ func MarshalState(s State) ([]byte, error) {
 	for _, e := range s.ElasticIPs {
 		item := eipDoc{
 			ID: string(e.ID), VPC: string(e.VPC), Address: e.Address.String(),
-			Subnet: string(e.Subnet), Region: e.Region, Labels: copyLabels(e.Labels), Status: int(e.Status),
+			Subnet: string(e.Subnet), Instance: e.Instance, Device: e.Device,
+			Region: e.Region, Labels: copyLabels(e.Labels), Status: int(e.Status),
 		}
 		if e.Private.IsValid() {
 			item.Private = e.Private.String()
@@ -104,7 +105,7 @@ func UnmarshalState(b []byte) (State, error) {
 		}
 		item := ElasticIP{
 			ID: ElasticIPID(e.ID), VPC: VPCID(e.VPC), Address: addr, Subnet: SubnetID(e.Subnet), Region: e.Region,
-			Labels: copyLabels(e.Labels), Status: Status(e.Status),
+			Instance: e.Instance, Device: e.Device, Labels: copyLabels(e.Labels), Status: Status(e.Status),
 		}
 		if e.Private != "" {
 			item.Private, err = netip.ParseAddr(e.Private)
@@ -172,6 +173,8 @@ type eipDoc struct {
 	Address   string            `json:"address"`
 	Private   string            `json:"private,omitempty"`
 	Subnet    string            `json:"subnet,omitempty"`
+	Instance  string            `json:"instance,omitempty"`
+	Device    string            `json:"device,omitempty"`
 	Region    string            `json:"region,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	Detaching []string          `json:"detaching,omitempty"`

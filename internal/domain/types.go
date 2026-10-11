@@ -125,6 +125,8 @@ type SecurityGroup struct {
 }
 
 // ElasticIP is one address from the pool. Address is fixed at allocation.
+// Instance and Device name the compute instance network interface it is
+// attached to; both are empty or both are set.
 // Subnet is set only while Private is associated. detaching holds addresses
 // whose NAT delete is not yet confirmed.
 type ElasticIP struct {
@@ -133,6 +135,8 @@ type ElasticIP struct {
 	Address   netip.Addr
 	Private   netip.Addr
 	Subnet    SubnetID
+	Instance  string
+	Device    string
 	Region    string
 	Labels    map[string]string
 	detaching []netip.Addr
@@ -237,6 +241,9 @@ type AllocateElasticIP struct {
 	ID     ElasticIPID       `json:"id,omitempty"`
 	Region string            `json:"region,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
+	// Instance and Device attach the new address to an instance interface.
+	Instance string `json:"instance,omitempty"`
+	Device   string `json:"device,omitempty"`
 }
 
 // ReleaseElasticIP returns an unassociated address to the pool.
@@ -267,6 +274,25 @@ type DisassociateElasticIP struct {
 	SetLabels     bool              `json:"set_labels,omitempty"`
 }
 
+// UpdateElasticIP is an UpdateAddress. VPC empty keeps the stored VPC; a
+// different non-empty VPC is invalid. SetAssociation selects the attachment:
+// Instance and Device set replace it, both empty clear it. Without it the
+// attachment is left alone. SetLabels replaces the labels.
+// AllowMissing creates a missing address from VPC, the attachment, and labels.
+// Empty Region skips the region check.
+type UpdateElasticIP struct {
+	ElasticIP      ElasticIPID       `json:"elastic_ip"`
+	Region         string            `json:"region,omitempty"`
+	VPC            VPCID             `json:"vpc,omitempty"`
+	RejectMissing  bool              `json:"reject_missing,omitempty"`
+	AllowMissing   bool              `json:"allow_missing,omitempty"`
+	SetAssociation bool              `json:"set_association,omitempty"`
+	Instance       string            `json:"instance,omitempty"`
+	Device         string            `json:"device,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	SetLabels      bool              `json:"set_labels,omitempty"`
+}
+
 // OperationType is the RPC name that accepted the operation.
 type OperationType string
 
@@ -286,6 +312,7 @@ const (
 	OpReleaseElasticIP      OperationType = "ReleaseElasticIp"
 	OpAssociateElasticIP    OperationType = "AssociateElasticIp"
 	OpDisassociateElasticIP OperationType = "DisassociateElasticIp"
+	OpUpdateElasticIP       OperationType = "UpdateElasticIp"
 )
 
 // OperationTypes is every stored mutation. VPC, subnet, and security group
@@ -297,7 +324,7 @@ func OperationTypes() []OperationType {
 		OpCreateSecurityGroup, OpUpdateSecurityGroup, OpDeleteSecurityGroup,
 		OpAuthorizeRules, OpRevokeRules,
 		OpAllocateElasticIP, OpReleaseElasticIP,
-		OpAssociateElasticIP, OpDisassociateElasticIP,
+		OpAssociateElasticIP, OpDisassociateElasticIP, OpUpdateElasticIP,
 	}
 }
 
@@ -321,7 +348,7 @@ func KindOf(typ OperationType) ResourceKind {
 		return KindSubnet
 	case OpCreateSecurityGroup, OpUpdateSecurityGroup, OpDeleteSecurityGroup, OpAuthorizeRules, OpRevokeRules:
 		return KindGroup
-	case OpAllocateElasticIP, OpReleaseElasticIP, OpAssociateElasticIP, OpDisassociateElasticIP:
+	case OpAllocateElasticIP, OpReleaseElasticIP, OpAssociateElasticIP, OpDisassociateElasticIP, OpUpdateElasticIP:
 		return KindAddress
 	default:
 		return 0

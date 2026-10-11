@@ -12,6 +12,8 @@
 | 규칙의 피어 CIDR은 VPC CIDR 검사를 타지 않는다. `0.0.0.0/0`을 허용한다. | `domain.CheckRule`, `TestPeerCIDRIsNotVPCCIDR` |
 | 의존 리소스가 있으면 삭제를 거절한다. 이미 없는 대상의 삭제는 성공한다. | `(*State).DeleteVPC`와 같은 메서드, `testConvergeAndDelete`, `testIdempotency` |
 | 엘라스틱 IP는 설정된 풀에서 한 번만 할당되고, 그 프로젝트의 VPC CIDR 밖에 있다. | `domain.NextAddress`, `(*State).AllocateElasticIP`, `TestRepositoryContract`, `testElasticIP` |
+| 엘라스틱 IP는 만들 때 VPC에 묶이고 바뀌지 않는다. 업데이트에서 빈 VPC는 저장된 값을 지운다고 보지 않는다. | `(*Service).UpdateElasticIP`, `testElasticIP`, `TestUpdateElasticIPKeepsVPC`, `TestAddressVPCAndAssociation` |
+| 인스턴스 연결(instance, device name)은 한 NIC에 주소 하나이고, 연결된 주소는 해제할 수 없다. | `(*State).SetElasticIPAssociation`, `(*State).ReleaseElasticIP`, `TestElasticIPInstanceAssociation`, `TestElasticIPAssociationSurvivesEncoding` |
 | 변경은 멱등 키로 한 번만 적용된다. 거절된 요청은 키를 남기지 않는다. | `(*Service).mutate`, `testIdempotency`, `testOverlapWritesNothing` |
 | 원하는 상태와 그 연산은 한 번에 커밋된다. | `repository.commit`, `TestRepositoryContract` |
 | 재시작은 `RUNNING` 연산을 `PENDING`으로 되돌리고 같은 경로로 수렴한다. | `repository.requeue`, `TestRestartRequeuesRunningOperation`, `TestSQLiteSurvivesReopen` |
