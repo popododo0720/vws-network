@@ -5,6 +5,7 @@ package grpcapi
 import (
 	"context"
 	"net/netip"
+	"strings"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc"
@@ -489,7 +490,8 @@ func (h *handler) CreateAddress(ctx context.Context, req *networkv1.CreateAddres
 	if req == nil {
 		return nil, requiredRequest()
 	}
-	if _, _, err := parseRegionParent(req.GetParent()); err != nil {
+	project, region, err := parseRegionParent(req.GetParent())
+	if err != nil {
 		return nil, err
 	}
 	if err := resourceID(req.GetAddressId()); err != nil {
@@ -501,11 +503,28 @@ func (h *handler) CreateAddress(ctx context.Context, req *networkv1.CreateAddres
 	if err := addressSpec(req.GetAddress()); err != nil {
 		return nil, err
 	}
-	if req.GetAddress().GetSpec().GetAssociation() != nil {
-		return nil, invalidSpec("association names a compute instance")
+	vpc, err := addressVPC(req.GetAddress().GetSpec().GetVpc(), project, region)
+	if err != nil {
+		return nil, err
 	}
-	// This service allocates a pool address inside a VPC. The request has no VPC.
-	return nil, invalidSpec("an address is allocated in a vpc")
+	if vpc == "" {
+		return nil, invalidSpec("an address is allocated in a vpc")
+	}
+	instance, device, err := addressAssociation(req.GetAddress().GetSpec().GetAssociation())
+	if err != nil {
+		return nil, err
+	}
+	if err := domain.CheckLabels(req.GetAddress().GetLabels()); err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	op, err := h.svc.AllocateElasticIP(ctx, callDry(project, req.GetRequestId(), req.GetAddressId(), req.GetValidateOnly()), domain.AllocateElasticIP{
+		VPC: domain.VPCID(vpc), ID: domain.ElasticIPID(req.GetAddressId()), Region: region,
+		Labels: req.GetAddress().GetLabels(), Instance: instance, Device: device,
+	})
+	if err != nil {
+		return nil, toStatus(err, req.GetRequestId())
+	}
+	return h.toOp(project, req.GetRequestId(), addressName(project, region, req.GetAddressId()), commonv1.OperationVerb_OPERATION_VERB_CREATE, op)
 }
 
 func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddressRequest) (*longrunningpb.Operation, error) {
@@ -526,12 +545,19 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 		return nil, err
 	}
 	touch := maskTouches(req.GetUpdateMask(), "spec")
+	touchAssociation := touch || maskSelects(req.GetUpdateMask(), "spec.association")
+	var vpc, instance, device string
 	if touch {
 		if err := addressSpec(req.GetAddress()); err != nil {
 			return nil, err
 		}
-		if req.GetAddress().GetSpec().GetAssociation() != nil {
-			return nil, invalidSpec("association names a compute instance")
+		if vpc, err = addressVPC(req.GetAddress().GetSpec().GetVpc(), n.Project, n.Region); err != nil {
+			return nil, err
+		}
+	}
+	if touchAssociation {
+		if instance, device, err = addressAssociation(req.GetAddress().GetSpec().GetAssociation()); err != nil {
+			return nil, err
 		}
 	}
 	setLabels := maskSelects(req.GetUpdateMask(), "labels")
@@ -539,8 +565,16 @@ func (h *handler) UpdateAddress(ctx context.Context, req *networkv1.UpdateAddres
 	if setLabels {
 		labels = req.GetAddress().GetLabels()
 	}
-	op, err := h.svc.DisassociateElasticIP(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.DisassociateElasticIP{
-		ElasticIP: domain.ElasticIPID(n.ID), RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(), Region: n.Region, Keep: !touch,
+	if req.GetAllowMissing() && vpc == "" {
+		vpc, err = addressVPC(req.GetAddress().GetSpec().GetVpc(), n.Project, n.Region)
+		if err != nil {
+			return nil, err
+		}
+	}
+	op, err := h.svc.UpdateElasticIP(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.UpdateElasticIP{
+		ElasticIP: domain.ElasticIPID(n.ID), Region: n.Region, VPC: domain.VPCID(vpc),
+		RejectMissing: !req.GetAllowMissing(), AllowMissing: req.GetAllowMissing(),
+		SetAssociation: touchAssociation, Instance: instance, Device: device,
 		Labels: labels, SetLabels: setLabels,
 	})
 	if err != nil {
@@ -681,6 +715,43 @@ func addressSpec(a *networkv1.Address) error {
 		return invalidSpec("ip_version must be ipv4")
 	}
 	return nil
+}
+
+// addressVPC returns the VPC id named by an address spec. The VPC must be in
+// the address's project and region. Empty means the spec names none.
+func addressVPC(raw, project, region string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	n, err := parseVPCName(raw)
+	if err != nil {
+		return "", invalidSpec("vpc is invalid")
+	}
+	if n.Project != project || n.Region != region {
+		return "", invalidSpec("vpc must be in the address project and region")
+	}
+	return n.ID, nil
+}
+
+// addressAssociation returns the instance and device name of an association.
+// A nil association is empty. A set one needs both parts.
+func addressAssociation(a *networkv1.AddressAssociation) (instance, device string, err error) {
+	if a == nil {
+		return "", "", nil
+	}
+	parts := strings.Split(a.GetInstance(), "/")
+	if len(parts) != 6 || parts[0] != "projects" || parts[2] != "zones" || parts[4] != "instances" {
+		return "", "", invalidSpec("association instance is invalid")
+	}
+	for _, id := range []string{parts[1], parts[3], parts[5]} {
+		if resourceID(id) != nil {
+			return "", "", invalidSpec("association instance is invalid")
+		}
+	}
+	if a.GetDeviceName() == "" {
+		return "", "", invalidSpec("association device name is required")
+	}
+	return a.GetInstance(), a.GetDeviceName(), nil
 }
 
 func resourceText(description string, labels map[string]string, setDescription, setLabels bool) domain.Text {
