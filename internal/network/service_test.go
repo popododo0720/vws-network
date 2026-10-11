@@ -971,3 +971,48 @@ func kind(err error) domain.ErrKind {
 	}
 	return 0
 }
+
+func TestUpdateElasticIPKeepsVPC(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openTest(t, newMemRepo())
+	vpcOp, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.9.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vpc := domain.VPCID(vpcOp.Resource)
+	const instance = "projects/proj/zones/z1/instances/i1"
+	if _, err := svc.AllocateElasticIP(ctx, call("proj", "eip"), domain.AllocateElasticIP{VPC: vpc, ID: "eip"}); err != nil {
+		t.Fatal(err)
+	}
+	set := domain.UpdateElasticIP{ElasticIP: "eip", RejectMissing: true, SetAssociation: true, Instance: instance, Device: "nic0"}
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "attach"), set); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetElasticIP(ctx, "proj", "eip")
+	if err != nil || got.VPC != vpc || got.Instance != instance || got.Device != "nic0" {
+		t.Fatalf("attached = %+v err %v", got, err)
+	}
+	// An empty VPC keeps the stored one.
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "labels"), domain.UpdateElasticIP{
+		ElasticIP: "eip", RejectMissing: true, SetLabels: true, Labels: map[string]string{"a": "b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.GetElasticIP(ctx, "proj", "eip")
+	if err != nil || got.VPC != vpc || got.Instance != instance {
+		t.Fatalf("after label update = %+v err %v", got, err)
+	}
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "move"), domain.UpdateElasticIP{ElasticIP: "eip", RejectMissing: true, VPC: "other"}); kind(err) != domain.Invalid {
+		t.Fatalf("vpc change err = %v", err)
+	}
+	// The same key replays the first answer; a different request on it conflicts.
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "attach"), set); err != nil {
+		t.Fatalf("replay err = %v", err)
+	}
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "attach"), domain.UpdateElasticIP{ElasticIP: "eip", SetAssociation: true}); kind(err) != domain.Conflict {
+		t.Fatalf("key reuse err = %v", err)
+	}
+	if _, err := svc.UpdateElasticIP(ctx, call("proj", "gone"), domain.UpdateElasticIP{ElasticIP: "nope", RejectMissing: true}); kind(err) != domain.NotFound {
+		t.Fatalf("missing err = %v", err)
+	}
+}

@@ -547,6 +547,60 @@ func (s *Service) DisassociateElasticIP(ctx context.Context, c domain.Call, r do
 	})
 }
 
+// UpdateElasticIP applies an UpdateAddress. The stored VPC is kept when r.VPC
+// is empty and must match when it is not. AllowMissing allocates a missing
+// address through AllocateElasticIP's rules.
+func (s *Service) UpdateElasticIP(ctx context.Context, c domain.Call, r domain.UpdateElasticIP) (domain.Operation, error) {
+	if r.ElasticIP == "" {
+		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip id is required"}
+	}
+	if r.SetLabels || r.AllowMissing {
+		if err := domain.CheckLabels(r.Labels); err != nil {
+			return domain.Operation{}, err
+		}
+	}
+	if (r.Instance == "") != (r.Device == "") {
+		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "instance and device name are required together"}
+	}
+	return s.mutate(ctx, c, domain.OpUpdateElasticIP, string(r.ElasticIP), r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
+		e, ok := st.ElasticIPs[r.ElasticIP]
+		if ok && otherName(e.Region, r.Region, "", "") {
+			return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+		}
+		if !ok {
+			if r.AllowMissing {
+				if r.VPC == "" {
+					return false, &domain.Error{Kind: domain.Invalid, Msg: "an address cannot be created without a vpc"}
+				}
+				return true, st.AllocateElasticIP(r.ElasticIP, domain.AllocateElasticIP{
+					VPC: r.VPC, ID: r.ElasticIP, Region: r.Region, Labels: r.Labels,
+					Instance: r.Instance, Device: r.Device,
+				}, s.pool, taken)
+			}
+			if r.RejectMissing {
+				return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
+			}
+			return false, nil
+		}
+		if r.VPC != "" && r.VPC != e.VPC {
+			return false, &domain.Error{Kind: domain.Invalid, Msg: "vpc is immutable"}
+		}
+		changed := false
+		if r.SetAssociation {
+			assoc, err := st.SetElasticIPAssociation(r.ElasticIP, r.Instance, r.Device)
+			if err != nil {
+				return false, err
+			}
+			changed = assoc
+		}
+		textChanged, err := st.ApplyAddressText(r.ElasticIP, r.Labels, r.SetLabels)
+		if err != nil {
+			return false, err
+		}
+		return changed || textChanged, nil
+	})
+}
+
 // keepBody is the fingerprint of an update that does not touch the spec.
 // Text is included so a label or description change is a different request.
 type keepBody struct {
@@ -797,7 +851,7 @@ func (s *Service) ViewOperation(ctx context.Context, p domain.ProjectID, id stri
 			return view, ignoreMissing(err)
 		}
 		view.Group = &g
-	case domain.OpAllocateElasticIP, domain.OpReleaseElasticIP, domain.OpAssociateElasticIP, domain.OpDisassociateElasticIP:
+	case domain.OpAllocateElasticIP, domain.OpReleaseElasticIP, domain.OpAssociateElasticIP, domain.OpDisassociateElasticIP, domain.OpUpdateElasticIP:
 		e, err := s.GetElasticIP(ctx, op.Project, domain.ElasticIPID(op.Resource))
 		if err != nil {
 			return view, ignoreMissing(err)
