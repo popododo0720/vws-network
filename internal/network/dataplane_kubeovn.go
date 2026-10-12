@@ -18,6 +18,7 @@ const annotationID = "vws.popododo0720.io/id"
 var (
 	gvkVpc    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Vpc"}
 	gvkSubnet = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Subnet"}
+	gvkGroup  = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "SecurityGroup"}
 
 	anyIPv4 = netip.MustParsePrefix("0.0.0.0/0")
 )
@@ -70,14 +71,6 @@ func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
 	return k.remove(ctx, gvkSubnet, string(s.ID))
 }
 
-func (k *kubeOVN) ensureGroup(context.Context, domain.SecurityGroup) error { return errNotImplemented }
-func (k *kubeOVN) deleteGroup(context.Context, domain.SecurityGroup) error { return errNotImplemented }
-func (k *kubeOVN) ensureRule(context.Context, domain.SecurityGroupID, domain.Rule) error {
-	return errNotImplemented
-}
-func (k *kubeOVN) deleteRule(context.Context, domain.SecurityGroupID, domain.Rule) error {
-	return errNotImplemented
-}
 func (k *kubeOVN) ensureElasticIP(context.Context, domain.ElasticIP) error { return errNotImplemented }
 func (k *kubeOVN) deleteElasticIP(context.Context, domain.ElasticIP) error { return errNotImplemented }
 func (k *kubeOVN) ensureNAT(context.Context, domain.ElasticIP, netip.Addr) error {
