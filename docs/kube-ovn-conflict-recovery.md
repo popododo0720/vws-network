@@ -1,6 +1,6 @@
 # Kube-OVN 충돌 복구 절차
 
-Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.Conflict`를 돌려줬을 때의 운영 절차다. 아래 내용은 `internal/network/dataplane_kubeovn.go`의 `ensureObject`, `remove`와 `internal/network/service.go`의 `failOrRetry`, `internal/domain/state.go`의 `Fail`, `Plan`을 읽고 적었다. 실제 Kube-OVN 클러스터에서 따라 해 본 절차가 아니다. 미검증이다.
+Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.Conflict`를 돌려줬을 때의 운영 절차다. 아래 내용은 `internal/network/dataplane_kubeovn.go`의 `ensureObject`, `remove`, `removeObject`, `deleteSubnet`과 `internal/network/service.go`의 `failOrRetry`, `internal/domain/state.go`의 `Fail`, `Plan`을 읽고 적었다. 실제 Kube-OVN 클러스터에서 따라 해 본 절차가 아니다. 미검증이다.
 
 ## 언제 충돌이 나는가
 
@@ -33,17 +33,20 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 
 ### 생성 연산이 충돌해 리소스가 `FAILED`인 경우
 
-코드가 지원하는 복구는 `FAILED` 리소스를 삭제하고 새 id로 다시 만드는 것뿐이다. 그 전에 알아야 할 것이 있다.
+코드가 지원하는 복구는 `FAILED` 리소스를 삭제하고 새 id로 다시 만드는 것뿐이다.
 
-`remove`는 이름으로 객체를 지우고 annotation을 확인하지 않는다. `FAILED` 리소스의 삭제는 계획에 `ActDelete*`를 만들고, 그 호출이 이름이 같은 사람 객체를 지운다. 사람 객체를 남겨야 하면 이 삭제를 보내면 안 된다.
+`remove`와 `removeObject`는 객체를 읽어 annotation `vws.popododo0720.io/id`가 리소스 id와 같을 때만 지운다. annotation이 없거나 다르면 `domain.Conflict`로 거절하고 아무것도 지우지 않는다. 지울 때는 읽은 객체의 UID를 삭제 조건으로 걸어서, 읽은 뒤 같은 이름으로 바뀐 객체는 지우지 않는다. 객체가 없으면 성공이다. 그래서 `FAILED` 리소스의 삭제는 이름이 같은 사람 객체를 지우지 않는다. 대신 그 삭제 연산이 `Conflict`로 `FAILED`가 된다.
 
-1. 이름이 같은 객체가 필요 없으면, 삭제를 보내 `FAILED` 리소스와 그 이름의 객체를 함께 정리한다. 의존 리소스(서브넷, 주소 등)가 있으면 삭제가 먼저 거절된다.
-2. 그 객체가 필요하면 먼저 내용을 `kubectl get -o yaml`로 백업하고 다른 이름으로 다시 만든 뒤에 삭제를 보낸다. 객체 이름은 바꿀 수 없다.
-3. 삭제가 끝나면 새 `CreateXxx` 요청을 보내 새 id를 받는다.
+삭제 연산이 실패해도 리소스는 `DELETING`에 남는다. `FailKind`는 `PENDING` 리소스만 `FAILED`로 바꾸기 때문이다. 서브넷 삭제는 SNAT 규칙, SNAT 주소, 그 서브넷이 둔 NAT 게이트웨이, Subnet, NAD 순으로 지우므로, 뒤 단계에서 충돌하면 앞 단계에서 지운 우리 객체는 이미 없다.
+
+1. 오류 메시지가 가리키는 객체를 `kubectl get <kind> <이름> -o yaml`로 본다.
+2. 그 객체가 필요하면 내용을 백업하고 다른 이름으로 다시 만든다. 객체 이름은 바꿀 수 없다. 그다음 원래 이름의 객체를 `kubectl delete`로 지운다. 필요 없으면 바로 지운다. 코드는 이 객체를 지우지 않으므로 사람이 지워야 한다.
+3. 같은 삭제를 새 `idempotency_key`로 다시 보낸다. 객체가 없으므로 삭제가 끝난다. 의존 리소스(서브넷, 주소 등)가 있으면 삭제가 먼저 거절된다.
+4. 삭제가 끝나면 새 `CreateXxx` 요청을 보내 새 id를 받는다.
 
 ## 코드가 지원하지 않는 것
 
 - 자동 adopt는 없다. annotation이 없는 객체를 우리 것으로 가져오지 않는다. 사람이 annotation을 붙여도 이미 `FAILED`가 된 생성은 되살아나지 않는다.
 - `FAILED` 리소스를 다시 수렴시키는 재시도 RPC는 없다.
 - 충돌한 객체를 우리 spec으로 덮어쓰지 않는다. 생성은 덮어쓰지 않고 기존 객체는 읽기만 한다.
-- 사람 객체를 지키려고 삭제를 막는 검사는 없다. 위의 `remove` 동작을 따른다.
+- id annotation이 없거나 다른 객체를 대신 지우거나 옮기는 기능은 없다. 사람이 `kubectl`로 정리해야 한다.
