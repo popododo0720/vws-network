@@ -177,7 +177,11 @@ func TestNADNamespaceDefaultsWhenSelected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dp.(*kubeOVN).nadNamespace; got != "vws-system" {
-		t.Fatalf("nad namespace %q, want vws-system", got)
+	k, ok := dp.(*kubeOVN)
+	if !ok {
+		t.Fatalf("got %T, want *kubeOVN", dp)
+	}
+	if k.nadNamespace != "vws-system" {
+		t.Fatalf("nad namespace %q, want vws-system", k.nadNamespace)
 	}
 }
