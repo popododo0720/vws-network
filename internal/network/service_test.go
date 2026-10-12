@@ -1037,3 +1037,24 @@ func TestInvalidDataplaneErrorFailsWithoutRetry(t *testing.T) {
 		t.Fatalf("dataplane calls %v", got)
 	}
 }
+
+func TestConflictFromDataplaneFailsWithoutRetry(t *testing.T) {
+	svc, fake := openTest(t, newMemRepo())
+	svc.backoff = func(int) time.Duration { return 0 }
+	fake.failNext(1, &domain.Error{Kind: domain.Conflict, Msg: "foreign object"})
+	ctx := context.Background()
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.6.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	op, err = svc.GetOperation(ctx, "proj", op.ID)
+	if err != nil || op.State != domain.OpFailed || op.Err.Kind != domain.Conflict {
+		t.Fatalf("op %+v err %v", op, err)
+	}
+	if got := fake.log(); len(got) != 1 {
+		t.Fatalf("dataplane calls %v", got)
+	}
+}
