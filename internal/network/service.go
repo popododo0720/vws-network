@@ -1095,7 +1095,8 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 
 func (s *Service) failOrRetry(ctx context.Context, j job, cause error) error {
 	j.attempts++
-	if j.attempts >= s.maxAttempts {
+	var de *domain.Error
+	if j.attempts >= s.maxAttempts || (errors.As(cause, &de) && de.Kind == domain.Invalid) {
 		return s.failJob(ctx, j, cause)
 	}
 	j.op.State = domain.OpPending
