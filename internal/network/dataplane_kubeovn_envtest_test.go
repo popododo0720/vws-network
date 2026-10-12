@@ -222,3 +222,30 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestEnvtestGatewayMovesWhenHostSubnetIsDeleted(t *testing.T) {
+	_, c := startEnv(t)
+	ctx := context.Background()
+	k := envKube(c, true)
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	for _, s := range []domain.Subnet{a, b} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.deleteSubnet(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	if host, _, _ := unstructured.NestedString(gw.Object, "spec", "subnet"); host != "subnet-b" {
+		t.Fatalf("gateway host %q, want subnet-b", host)
+	}
+	if err := k.deleteSubnet(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	err := c.Get(ctx, client.ObjectKey{Name: "nat-vpc-1"}, gw)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("gateway after last subnet: %v", err)
+	}
+}
