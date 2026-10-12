@@ -40,10 +40,7 @@ func (k *kubeOVN) ensureNAD(ctx context.Context, s domain.SubnetID) error {
 	if err != nil {
 		return err
 	}
-	o := k.nad(s)
-	o.Object["spec"] = map[string]any{"config": string(cfg)}
-	o.SetAnnotations(map[string]string{annotationID: string(s)})
-	return client.IgnoreAlreadyExists(k.c.Create(ctx, o))
+	return k.ensureObject(ctx, k.nad(s), string(s), map[string]any{"config": string(cfg)})
 }
 
 func (k *kubeOVN) removeNAD(ctx context.Context, s domain.SubnetID) error {

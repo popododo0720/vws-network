@@ -33,7 +33,7 @@ func natLanIP(p netip.Prefix) netip.Addr {
 }
 
 // ensureSNAT gives a subnet outbound SNAT. The VPC gateway lives on the first
-// subnet that asks, and later subnets reuse it. The OvnEip takes its address
+// subnet that asks, and later subnets reuse it, so its host fields are not compared. The OvnEip takes its address
 // from the external subnet.
 func (k *kubeOVN) ensureSNAT(ctx context.Context, s domain.Subnet) error {
 	if err := k.ensure(ctx, gvkNatGW, natGatewayName(s.VPC), map[string]any{
@@ -41,7 +41,7 @@ func (k *kubeOVN) ensureSNAT(ctx context.Context, s domain.Subnet) error {
 		"subnet":          string(s.ID),
 		"lanIp":           natLanIP(s.CIDR).String(),
 		"externalSubnets": []any{k.externalSubnet},
-	}); err != nil {
+	}, "subnet", "lanIp"); err != nil {
 		return err
 	}
 	if err := k.ensure(ctx, gvkEip, snatName(s.ID), map[string]any{

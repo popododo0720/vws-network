@@ -19,7 +19,7 @@ func (k *kubeOVN) ensureGroup(ctx context.Context, g domain.SecurityGroup) error
 		"ingressRules":          []any{},
 		"egressRules":           []any{},
 		"allowSameGroupTraffic": false,
-	})
+	}, "ingressRules", "egressRules")
 }
 
 func (k *kubeOVN) deleteGroup(ctx context.Context, g domain.SecurityGroup) error {
