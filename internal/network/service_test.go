@@ -3,8 +3,11 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1056,5 +1059,34 @@ func TestConflictFromDataplaneFailsWithoutRetry(t *testing.T) {
 	}
 	if got := fake.log(); len(got) != 1 {
 		t.Fatalf("dataplane calls %v", got)
+	}
+}
+
+func TestExhaustedDataplaneErrorHidesCause(t *testing.T) {
+	svc, fake := openTest(t, newMemRepo())
+	svc.backoff = func(int) time.Duration { return 0 }
+	svc.maxAttempts = 1
+	var logged []string
+	svc.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	fake.failNext(1, errors.New("secret internal detail"))
+	ctx := context.Background()
+	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.6.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	op, err = svc.GetOperation(ctx, "proj", op.ID)
+	if err != nil || op.State != domain.OpFailed {
+		t.Fatalf("op %+v err %v", op, err)
+	}
+	want := &domain.Error{Kind: domain.Dataplane, Msg: "dataplane reconciliation failed"}
+	if !reflect.DeepEqual(op.Err, want) {
+		t.Fatalf("err %+v, want %+v", op.Err, want)
+	}
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "secret internal detail") || !strings.Contains(joined, op.ID) {
+		t.Fatalf("log %q", joined)
 	}
 }

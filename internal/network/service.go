@@ -1153,11 +1153,17 @@ func (s *Service) failOrRetry(ctx context.Context, j job, cause error) error {
 	return s.repo.commit(ctx, commit{project: j.op.Project, settle: &j})
 }
 
+const dataplaneFailedMsg = "dataplane reconciliation failed"
+
 func (s *Service) failJob(ctx context.Context, j job, cause error) error {
-	de := &domain.Error{Kind: domain.Dataplane, Msg: cause.Error()}
+	de := &domain.Error{Kind: domain.Dataplane, Msg: dataplaneFailedMsg}
 	var already *domain.Error
 	if errors.As(cause, &already) {
 		de = already
+	} else if errors.Is(cause, errPanic) {
+		de.Msg = errPanic.Error()
+	} else if s.logf != nil {
+		s.logf("network: operation %s %s %s failed: %v", j.op.ID, j.op.Type, j.op.Resource, cause)
 	}
 	var last error
 	for i := 0; i < 8; i++ {
