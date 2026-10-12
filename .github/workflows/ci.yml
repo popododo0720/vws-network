@@ -19,6 +19,13 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: test
         run: go test ./...
+      - name: envtest
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+          export KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
+          go test -tags envtest -count=1 ./internal/network
       - name: lint
         uses: golangci/golangci-lint-action@v8
         with:
