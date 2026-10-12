@@ -44,8 +44,8 @@ type Service struct {
 }
 
 // Open opens SQLite, requeues operations left running by the previous process,
-// and starts workers. The dataplane is Kube-OVN when cfg.KubeOVN has a
-// kubeconfig and the in-process fake otherwise.
+// and starts workers. The dataplane is Kube-OVN when cfg.KubeOVN sets a
+// kubeconfig or any other Kube-OVN option, and the in-process fake otherwise.
 func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err
