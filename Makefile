@@ -1,4 +1,4 @@
-.PHONY: test envtest lint
+.PHONY: test envtest lint guard
 
 test:
 	CGO_ENABLED=0 go test ./...
@@ -9,3 +9,7 @@ envtest:
 
 lint:
 	golangci-lint run
+
+guard:
+	scripts/guard-agents.sh selftest
+	scripts/guard-agents.sh agents
