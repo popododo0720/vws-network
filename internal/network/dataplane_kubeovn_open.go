@@ -8,14 +8,15 @@ import (
 )
 
 // KubeOVNConfig selects the Kube-OVN dataplane. An empty Kubeconfig selects
-// the in-process fake and every other field must then be empty.
+// the in-process fake and every other field must then be empty. With a
+// Kubeconfig, ExternalSubnet and NADNamespace are required.
 // ExternalSubnet names the Kube-OVN Subnet that holds the elastic IP pool.
 // NADNamespace holds one NetworkAttachmentDefinition per subnet.
 type KubeOVNConfig struct {
 	Kubeconfig     string
 	ExternalSubnet string
 	NADNamespace   string
-	// SNAT gives every subnet outbound SNAT and needs ExternalSubnet.
+	// SNAT gives every subnet outbound SNAT through ExternalSubnet.
 	SNAT bool
 }
 
@@ -30,8 +31,8 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if cfg.NADNamespace == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn nad namespace is required"}
 	}
-	if cfg.SNAT && cfg.ExternalSubnet == "" {
-		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn snat needs an external subnet"}
+	if cfg.ExternalSubnet == "" {
+		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn external subnet is required"}
 	}
 	rc, err := clientcmd.BuildConfigFromFlags("", cfg.Kubeconfig)
 	if err != nil {

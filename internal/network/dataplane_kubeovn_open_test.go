@@ -61,13 +61,14 @@ func TestNewDataplaneRejectsBadConfig(t *testing.T) {
 		"nad namespace only":         {NADNamespace: "vws-system"},
 		"snat without kubeconfig":    {SNAT: true},
 		"snat without external":      {Kubeconfig: writeKubeconfig(t), NADNamespace: "n", SNAT: true},
-		"missing nad namespace":      {Kubeconfig: writeKubeconfig(t)},
+		"missing external subnet":    {Kubeconfig: writeKubeconfig(t), NADNamespace: "n"},
+		"missing nad namespace":      {Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext"},
 	} {
 		if _, err := newDataplane(cfg); !isInvalid(err) {
 			t.Fatalf("%s: err %v, want Invalid", name, err)
 		}
 	}
-	if _, err := newDataplane(KubeOVNConfig{Kubeconfig: filepath.Join(t.TempDir(), "absent"), NADNamespace: "n"}); err == nil {
+	if _, err := newDataplane(KubeOVNConfig{Kubeconfig: filepath.Join(t.TempDir(), "absent"), ExternalSubnet: "ext", NADNamespace: "n"}); err == nil {
 		t.Fatal("absent kubeconfig accepted")
 	}
 }
@@ -86,7 +87,7 @@ func TestOpenUsesKubeOVNOnlyWithKubeconfig(t *testing.T) {
 	svc, err = Open(ctx, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "b.db"),
 		AddressPool:  pool,
-		KubeOVN:      KubeOVNConfig{Kubeconfig: writeKubeconfig(t), NADNamespace: "vws-system"},
+		KubeOVN:      KubeOVNConfig{Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext", NADNamespace: "vws-system"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,5 +98,8 @@ func TestOpenUsesKubeOVNOnlyWithKubeconfig(t *testing.T) {
 	_ = svc.Close()
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !isInvalid(err) {
 		t.Fatalf("stray option err %v", err)
+	}
+	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "d.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{Kubeconfig: writeKubeconfig(t), NADNamespace: "vws-system"}}); !isInvalid(err) {
+		t.Fatalf("kubeconfig without external subnet err %v", err)
 	}
 }

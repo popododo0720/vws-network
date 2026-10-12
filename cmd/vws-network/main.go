@@ -23,15 +23,15 @@ func main() {
 	dbPath := flag.String("db", "", "sqlite database path")
 	poolFlag := flag.String("pool", "", "elastic ip pool cidr")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane")
-	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool")
+	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required with -kubeconfig")
 	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions")
-	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT; needs -kube-external-subnet")
+	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT through -kube-external-subnet")
 	flag.Parse()
 	if *kubeconfig != "" && *nadNamespace == "" {
 		*nadNamespace = "vws-system"
 	}
 	if *dbPath == "" || *poolFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH [-kube-external-subnet NAME] [-kube-nad-namespace NS]]")
+		fmt.Fprintln(os.Stderr, "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH -kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat]]")
 		os.Exit(2)
 	}
 	pool, err := netip.ParsePrefix(*poolFlag)
