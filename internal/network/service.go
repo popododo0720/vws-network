@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/netip"
 	"sort"
@@ -1012,14 +1013,14 @@ func sameRules(got, want []domain.Rule, replaceEmpty bool) bool {
 func fingerprint(typ domain.OperationType, req any) ([32]byte, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	sum := sha256.New()
 	if _, err := sum.Write([]byte(typ)); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	if _, err := sum.Write(b); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	var out [32]byte
 	copy(out[:], sum.Sum(nil))
@@ -1065,7 +1066,6 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		rel := j
 		rel.op.State = domain.OpPending
 		rel.op.Err = nil
-		//nolint:contextcheck // ctx may be cancelled here and the claim must still be released
 		if err := s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel}); err != nil && s.logf != nil {
 			s.logf("network: release claim of %s: %v", j.op.ID, err)
 		}

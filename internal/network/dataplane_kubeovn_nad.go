@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -37,7 +38,7 @@ func (k *kubeOVN) ensureNAD(ctx context.Context, s domain.SubnetID) error {
 		"provider":      k.nadProvider(s),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("ensureNAD: %w", err)
 	}
 	return k.ensureObject(ctx, k.nad(s), string(s), map[string]any{"config": string(cfg)})
 }
