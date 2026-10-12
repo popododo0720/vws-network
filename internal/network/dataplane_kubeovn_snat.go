@@ -93,7 +93,7 @@ func (k *kubeOVN) rehomeGateway(ctx context.Context, gone domain.Subnet) error {
 	case err != nil:
 		return err
 	default:
-		if host, _, _ := unstructured.NestedString(gw.Object, "spec", "subnet"); host != string(gone.ID) {
+		if nestedString(gw.Object, "spec", "subnet") != string(gone.ID) {
 			return nil
 		}
 		if err := k.removeObject(ctx, gw, natGatewayName(gone.VPC)); err != nil {
@@ -118,7 +118,7 @@ func (k *kubeOVN) firstOtherSubnet(ctx context.Context, gone domain.Subnet) (dom
 	var best *unstructured.Unstructured
 	for i := range list.Items {
 		o := &list.Items[i]
-		if vpc, _, _ := unstructured.NestedString(o.Object, "spec", "vpc"); vpc != string(gone.VPC) {
+		if nestedString(o.Object, "spec", "vpc") != string(gone.VPC) {
 			continue
 		}
 		if o.GetName() == string(gone.ID) || o.GetDeletionTimestamp() != nil {
@@ -131,7 +131,7 @@ func (k *kubeOVN) firstOtherSubnet(ctx context.Context, gone domain.Subnet) (dom
 	if best == nil {
 		return domain.Subnet{}, false, nil
 	}
-	cidr, _, _ := unstructured.NestedString(best.Object, "spec", "cidrBlock")
+	cidr := nestedString(best.Object, "spec", "cidrBlock")
 	p, err := netip.ParsePrefix(cidr)
 	if err != nil {
 		return domain.Subnet{}, false, fmt.Errorf("subnet %s has cidrBlock %q: %w", best.GetName(), cidr, err)

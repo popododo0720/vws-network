@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/netip"
 	"strconv"
 	"time"
@@ -36,20 +38,17 @@ func openSQLite(ctx context.Context, path string) (*sqliteRepo, error) {
 	db.SetMaxOpenConns(1)
 	r := &sqliteRepo{db: db, mu: make(chan struct{}, 1)}
 	if err := r.lock(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, failClose(err, db)
 	}
 	defer r.unlock()
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, failClose(err, db)
 	}
 	if version == 0 {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 		if _, err := tx.ExecContext(ctx, `
 CREATE TABLE projects (
@@ -79,27 +78,20 @@ CREATE TABLE addresses (
   project TEXT NOT NULL
 );
 `); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(rollbackOn(err, tx), db)
 		}
 		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+strconv.Itoa(schemaVersion)); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(rollbackOn(err, tx), db)
 		}
 		if err := tx.Commit(); err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 	} else if version < schemaVersion {
 		if err := migrateSQLite(ctx, db, version); err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 	} else if version != schemaVersion {
-		_ = db.Close()
-		return nil, errors.New("network: unsupported sqlite schema version")
+		return nil, failClose(errors.New("network: unsupported sqlite schema version"), db)
 	}
 	return r, nil
 }
@@ -110,7 +102,7 @@ func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollback(tx)
 	for version < schemaVersion {
 		switch version {
 		case 1:
@@ -141,14 +133,12 @@ func rewriteProjectDocuments(ctx context.Context, tx *sql.Tx) error {
 	for rows.Next() {
 		var item row
 		if err := rows.Scan(&item.id, &item.state); err != nil {
-			_ = rows.Close()
-			return err
+			return failClose(err, rows)
 		}
 		saved = append(saved, item)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
+		return failClose(err, rows)
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -179,6 +169,39 @@ func (r *sqliteRepo) lock(ctx context.Context) error {
 }
 
 func (r *sqliteRepo) unlock() { <-r.mu }
+
+// failClose returns err joined with the error from closing c, so a failed
+// close on an error path is reported instead of dropped.
+func failClose(err error, c io.Closer) error {
+	if cerr := c.Close(); cerr != nil {
+		return errors.Join(err, cerr)
+	}
+	return err
+}
+
+// rollbackOn rolls tx back after err and joins a rollback failure to err.
+func rollbackOn(err error, tx *sql.Tx) error {
+	if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
+		return errors.Join(err, rerr)
+	}
+	return err
+}
+
+// rollback is the deferred rollback of a transaction that may have committed.
+// sql.ErrTxDone is the normal result after Commit. Any other failure is logged
+// because the caller is already returning.
+func rollback(tx *sql.Tx) {
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		log.Printf("network: rollback: %v", err)
+	}
+}
+
+// closeLogged closes a read-only cursor whose error cannot change the result.
+func closeLogged(c io.Closer) {
+	if err := c.Close(); err != nil {
+		log.Printf("network: close: %v", err)
+	}
+}
 
 func (r *sqliteRepo) close() error { return r.db.Close() }
 
@@ -212,7 +235,7 @@ func (r *sqliteRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, e
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeLogged(rows)
 	out := map[netip.Addr]bool{}
 	for rows.Next() {
 		var raw string
@@ -272,7 +295,7 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollback(tx)
 	if c.settle != nil {
 		terminal, err := settleAllowed(ctx, tx, *c.settle)
 		if err != nil {
@@ -446,7 +469,7 @@ func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeLogged(rows)
 	var jobs []job
 	for rows.Next() {
 		j, err := scanJob(rows)

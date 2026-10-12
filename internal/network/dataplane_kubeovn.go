@@ -81,7 +81,7 @@ func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured
 	if got := have.GetAnnotations()[annotationID]; got != id {
 		return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has id annotation %q, want %q", kind, key, got, id)}
 	}
-	haveSpec, _, _ := unstructured.NestedMap(have.Object, "spec")
+	haveSpec := nestedMap(have.Object, "spec")
 	for field, w := range spec {
 		if slices.Contains(ignore, field) {
 			continue
@@ -91,6 +91,19 @@ func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured
 		}
 	}
 	return nil
+}
+
+// nestedString reads a string field of an object that came from the cluster.
+// A missing or mistyped field reads as empty, which never equals a resource id.
+func nestedString(obj map[string]any, fields ...string) string {
+	v, _, _ := unstructured.NestedString(obj, fields...) //nolint:errcheck // absent and mistyped both read as empty
+	return v
+}
+
+// nestedMap is nestedString for a map field.
+func nestedMap(obj map[string]any, fields ...string) map[string]any {
+	v, _, _ := unstructured.NestedMap(obj, fields...) //nolint:errcheck // absent and mistyped both read as empty
+	return v
 }
 
 // remove deletes the object only when it carries the id annotation for id. A

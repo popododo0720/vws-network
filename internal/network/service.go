@@ -67,7 +67,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	svc, err := start(ctx, repo, dp, cfg.AddressPool, workers)
 	if err != nil {
-		_ = repo.close()
+		if cerr := repo.close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
 		return nil, err
 	}
 	return svc, nil
@@ -1063,7 +1065,10 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		rel := j
 		rel.op.State = domain.OpPending
 		rel.op.Err = nil
-		_ = s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel})
+		//nolint:contextcheck // ctx may be cancelled here and the claim must still be released
+		if err := s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel}); err != nil && s.logf != nil {
+			s.logf("network: release claim of %s: %v", j.op.ID, err)
+		}
 	}()
 	st, _, err := s.repo.load(ctx, j.op.Project)
 	if err != nil {
