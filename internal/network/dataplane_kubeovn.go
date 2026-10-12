@@ -21,6 +21,7 @@ var (
 	gvkGroup  = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "SecurityGroup"}
 	gvkEip    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "OvnEip"}
 	gvkFip    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "OvnFip"}
+	gvkNAD    = schema.GroupVersionKind{Group: "k8s.cni.cncf.io", Version: "v1", Kind: "NetworkAttachmentDefinition"}
 
 	anyIPv4 = netip.MustParsePrefix("0.0.0.0/0")
 )
@@ -34,6 +35,8 @@ var (
 type kubeOVN struct {
 	c              client.Client
 	externalSubnet string
+	// nadNamespace holds one NetworkAttachmentDefinition per subnet.
+	nadNamespace string
 }
 
 func (k *kubeOVN) ensure(ctx context.Context, gvk schema.GroupVersionKind, id string, spec map[string]any) error {
@@ -66,15 +69,22 @@ func (k *kubeOVN) ensureSubnet(ctx context.Context, s domain.Subnet) error {
 	if err := domain.CheckSubnetCIDR(anyIPv4, s.CIDR); err != nil {
 		return err
 	}
+	if err := k.ensureNAD(ctx, s.ID); err != nil {
+		return err
+	}
 	return k.ensure(ctx, gvkSubnet, string(s.ID), map[string]any{
 		"vpc":       string(s.VPC),
 		"cidrBlock": s.CIDR.String(),
 		"protocol":  "IPv4",
+		"provider":  k.nadProvider(s.ID),
 	})
 }
 
 func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
-	return k.remove(ctx, gvkSubnet, string(s.ID))
+	if err := k.remove(ctx, gvkSubnet, string(s.ID)); err != nil {
+		return err
+	}
+	return k.removeNAD(ctx, s.ID)
 }
 
 var _ dataplane = (*kubeOVN)(nil)
