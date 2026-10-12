@@ -27,6 +27,7 @@
 | VPC, 서브넷, 보안 그룹의 description과 VPC, 서브넷, 보안 그룹, 주소의 labels는 저장되고 조회되며 `update_mask`로 바뀐다. 라벨은 64개 이하이고 키는 `[a-z][a-z0-9_-]{0,62}`이며 값은 63바이트 이하의 제어 문자가 없는 UTF-8이다. description은 1024바이트 이하다. 프로젝트 id는 리소스 id 문법이라 `a`와 계정 번호를 잇는 형식도 받는다. | `domain.CheckLabels`, `domain.CheckDescription`, `(*State).CreateVPC`, `(*State).ApplyVPCText`, `TestLabelsRoundTrip`, `TestSQLiteMigratesV1`, `TestLabelsSurviveReopen`, `TestLabelsIdempotent`, `TestAccountProjectStoresLabels` |
 | 데이터플레인 구현은 `fakeDataplane`과 `kubeOVN`이고, 다른 패키지에서 호출할 수 없다. | 비공개 `dataplane`, `var _ dataplane = (*fakeDataplane)(nil)`, `var _ dataplane = (*kubeOVN)(nil)` |
 | Kube-OVN 객체는 클러스터 범위이고 이름이 리소스 id다. AWS id는 annotation에만 두며 CRD를 만들지 않는다. 생성은 덮어쓰지 않고, 없는 객체의 삭제는 성공한다. | `kubeOVN.ensure`, `kubeOVN.remove`, `annotationID`, `TestKubeOVNVPCAndSubnet`, `TestKubeOVNDeleteIsIdempotent` |
+| 규칙 추가와 삭제는 SecurityGroup의 ingress 또는 egress 목록 하나의 Update이고 같은 규칙은 한 번만 들어간다. 지원하지 못하는 규칙(tcp, udp 포트 0)은 `domain.Invalid`로 거절한다. | `ovnRule`, `(*kubeOVN).editRules`, `TestOvnRule`, `TestOvnRuleRejectsUnsupported`, `TestKubeOVNRulesAreIdempotent` |
 | 데이터플레인이 입력 오류(`domain.Invalid`)를 돌려주면 재시도하지 않고 연산을 실패시킨다. | `(*Service).failOrRetry`, `TestInvalidDataplaneErrorFailsWithoutRetry` |
 | RPC를 추가하면 핸들러를 비워 둘 수 없다. | `TestHandlersOverrideUnimplemented` |
 | VPC, 서브넷, 보안 그룹의 생성, 수정, 삭제 연산 타입 문자열은 RPC 이름과 같다. | `domain.OpCreateVPC`, `domain.OpUpdateVPC`, `domain.OpDeleteVPC`와 같은 상수, `TestOperationTypesAreRPCNames` |
