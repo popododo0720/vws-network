@@ -39,6 +39,7 @@
 | 도메인 오류 종류는 모두 gRPC 코드로 바뀐다. | `toStatus`, `TestAllErrKindsMapped` |
 | proto는 `third_party/vws-proto`로 두고 `go.mod` replace가 그 모듈을 가리킨다. | `TestVWSProtoIsReplaced` |
 | 배포 매니페스트와 상표 고지를 넣지 않는다. | `TestNoDeployment`, `TestNoBrandNotice` |
+| 에러는 삼키지 않고 외부 패키지의 에러는 `%w`로 감싼다. 닫기, 롤백, 클러스터 필드 읽기의 실패는 `failClose`, `rollback`, `nestedString`처럼 한 곳에서 다루고, 예외는 `//nolint:<린터> // 이유`로 이유를 적는다. 요청 경계는 잘못된 CIDR과 id를 `InvalidArgument`로 거절한다. gRPC 핸들러와 워커의 패닉은 복구해 클라이언트에는 고정 메시지 `Internal`만 주고, 값과 스택은 로그에만 남긴다. | `.golangci.yml`(errcheck check-blank, wrapcheck, errorlint, nilerr, nilnil, noctx, contextcheck, bodyclose, errname, sloglint), `ServerOptions`, `(*Service).convergeRecovering`, `(*Service).stepRecovering`, `TestRecoverUnaryReturnsInternalWithoutPanicValue`, `TestRecoverStreamReturnsInternalWithoutPanicValue`, `TestDataplanePanicFailsOperationWithoutLeak`, `TestStepRecoveringSurvivesPanic`, `TestHostileInputIsInvalidArgument` |
 | 포맷, 테스트, 린트가 통과해야 한다. | `.github/workflows/ci.yml`의 `gofmt`, `go test ./...`, `envtest`, `golangci-lint` |
 | `main`에 직접 푸시하지 않고, 커밋은 원자적으로 나눈다. | 아래 절차. 브랜치 보호는 저장소 설정이다. |
 | 설계와 반복되는 실수는 pstack으로 다룬다. | 아래 pstack 절차. 판단이라 린트로 막지 않는다. |
