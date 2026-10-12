@@ -32,14 +32,14 @@
 | 서브넷마다 Multus `NetworkAttachmentDefinition`이 하나이고 서브넷과 함께 만들고 지운다. NAD 이름은 `nadName` 한 곳에서만 만든다. | `(*kubeOVN).ensureNAD`, `nadName`, `TestKubeOVNSubnetOwnsOneNAD`, `TestKubeOVNSubnetNeedsNADNamespace` |
 | kubeconfig가 있을 때만 `Open`이 `kubeOVN`을 쓰고, 없으면 `fakeDataplane`이다. kubeconfig 없이 Kube-OVN 옵션만 주면 `domain.Invalid`로 거절한다. 생성은 `newDataplane` 한 곳에서만 한다. | `newDataplane`, `KubeOVNConfig`, `TestNewDataplaneSelection`, `TestNewDataplaneRejectsBadConfig`, `TestOpenUsesKubeOVNOnlyWithKubeconfig` |
 | `SNAT`이 켜지면 서브넷마다 `OvnEip`(type nat)과 `OvnSnatRule`이 있고, VPC의 `VpcNatGateway`는 하나이며 처음 SNAT을 만든 서브넷에 둔다. 서브넷을 지우면 규칙, 주소, 그 서브넷이 둔 게이트웨이 순으로 지운다. 외부 대역 없이는 켤 수 없다. 이름은 `natGatewayName`, `snatName`에서만 만든다. | `(*kubeOVN).ensureSNAT`, `(*kubeOVN).deleteSNAT`, `natGatewayName`, `snatName`, `TestKubeOVNSubnetSNAT`, `TestKubeOVNDeleteSubnetSNAT`, `TestKubeOVNSNATNeedsExternalSubnet`, `TestNewDataplaneRejectsBadConfig` |
-| `kubeOVN`은 실제 API 서버로도 검증한다. 테스트는 `envtest` 빌드 태그 뒤에 있고 `KUBEBUILDER_ASSETS`가 없으면 건너뛴다. 그래서 CI의 `go test ./...`는 envtest 없이 통과한다. CRD는 `internal/network/testdata/crds`의 최소 픽스처이고 스키마를 검증하지 않는다. 서브넷 CIDR 포함 관계 검사는 dataplane이 아니라 서비스가 한다. | `startEnv`, `make envtest`, `TestEnvtestSubnetAndSNATLifecycle`, `TestEnvtestRulesAndElasticIP`, `TestEnvtestServiceThroughOpen` |
+| `kubeOVN`은 실제 API 서버로도 검증한다. 테스트는 `envtest` 빌드 태그 뒤에 있고 `KUBEBUILDER_ASSETS`가 없으면 건너뛴다. CI는 `go test ./...`와 별도의 `envtest` 단계(`setup-envtest` v0.25.2, Kubernetes 1.37.0 고정)에서 이를 실제로 돌린다. CRD는 `internal/network/testdata/crds`의 최소 픽스처이고 스키마를 검증하지 않는다. 서브넷 CIDR 포함 관계 검사는 dataplane이 아니라 서비스가 한다. | `startEnv`, `make envtest`, `TestEnvtestSubnetAndSNATLifecycle`, `TestEnvtestRulesAndElasticIP`, `TestEnvtestServiceThroughOpen` |
 | 데이터플레인이 입력 오류(`domain.Invalid`)를 돌려주면 재시도하지 않고 연산을 실패시킨다. | `(*Service).failOrRetry`, `TestInvalidDataplaneErrorFailsWithoutRetry` |
 | RPC를 추가하면 핸들러를 비워 둘 수 없다. | `TestHandlersOverrideUnimplemented` |
 | VPC, 서브넷, 보안 그룹의 생성, 수정, 삭제 연산 타입 문자열은 RPC 이름과 같다. | `domain.OpCreateVPC`, `domain.OpUpdateVPC`, `domain.OpDeleteVPC`와 같은 상수, `TestOperationTypesAreRPCNames` |
 | 도메인 오류 종류는 모두 gRPC 코드로 바뀐다. | `toStatus`, `TestAllErrKindsMapped` |
 | proto는 `third_party/vws-proto`로 두고 `go.mod` replace가 그 모듈을 가리킨다. | `TestVWSProtoIsReplaced` |
 | 배포 매니페스트와 상표 고지를 넣지 않는다. | `TestNoDeployment`, `TestNoBrandNotice` |
-| 포맷, 테스트, 린트가 통과해야 한다. | `.github/workflows/ci.yml`의 `gofmt`, `go test ./...`, `golangci-lint` |
+| 포맷, 테스트, 린트가 통과해야 한다. | `.github/workflows/ci.yml`의 `gofmt`, `go test ./...`, `envtest`, `golangci-lint` |
 | `main`에 직접 푸시하지 않고, 커밋은 원자적으로 나눈다. | 아래 절차. 브랜치 보호는 저장소 설정이다. |
 | 설계와 반복되는 실수는 pstack으로 다룬다. | 아래 pstack 절차. 판단이라 린트로 막지 않는다. |
 
