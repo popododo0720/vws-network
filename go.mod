@@ -79,3 +79,5 @@ require (
 )
 
 replace github.com/popododo0720/vws-proto => ./third_party/vws-proto
+
+replace github.com/popododo0720/vws-lib => ./third_party/vws-lib
