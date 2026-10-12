@@ -220,3 +220,26 @@ func TestKubeOVNDeleteHostWaitsForTerminatingGateway(t *testing.T) {
 		t.Fatalf("gateway on %s, want subnet-b", host)
 	}
 }
+
+func TestKubeOVNRehomeKeepsForeignGateway(t *testing.T) {
+	ctx := context.Background()
+	k, c := snatKube()
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	for _, s := range []domain.Subnet{a, b} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	gw.SetAnnotations(map[string]string{annotationID: "someone-else"})
+	if err := c.Update(ctx, gw); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.deleteSubnet(ctx, a); !isConflict(err) {
+		t.Fatalf("err %v, want conflict", err)
+	}
+	if host, _ := gatewayHost(t, c); host != "subnet-a" {
+		t.Fatalf("foreign gateway moved to %s", host)
+	}
+}

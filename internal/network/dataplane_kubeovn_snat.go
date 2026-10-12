@@ -81,7 +81,9 @@ func (k *kubeOVN) deleteSNAT(ctx context.Context, s domain.Subnet) error {
 // name. With no subnet left the gateway goes. The state is only the cluster
 // objects: after a crash between delete and create, the next call finds no
 // gateway and a remaining subnet and creates it. A gateway that is still
-// terminating makes the create fail with a retryable error.
+// terminating makes the create fail with a retryable error. A gateway without
+// our id annotation is not ours: it is a Conflict and nothing is deleted. The
+// delete carries the UID read here, so a gateway replaced since is kept.
 func (k *kubeOVN) rehomeGateway(ctx context.Context, gone domain.Subnet) error {
 	gw := &unstructured.Unstructured{}
 	gw.SetGroupVersionKind(gvkNatGW)
