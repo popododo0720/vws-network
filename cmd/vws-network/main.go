@@ -24,12 +24,9 @@ func main() {
 	poolFlag := flag.String("pool", "", "elastic ip pool cidr")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane and takes precedence over the in-cluster config")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required for Kube-OVN, and without -kubeconfig it selects the in-cluster service account")
-	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions")
+	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions; defaults to vws-system when Kube-OVN is selected")
 	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT through -kube-external-subnet")
 	flag.Parse()
-	if (*kubeconfig != "" || *externalSubnet != "" || *snat) && *nadNamespace == "" {
-		*nadNamespace = "vws-system"
-	}
 	if *dbPath == "" || *poolFlag == "" {
 		fmt.Fprintln(os.Stderr, "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat]]")
 		os.Exit(2)

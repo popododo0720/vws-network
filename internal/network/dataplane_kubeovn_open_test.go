@@ -61,13 +61,11 @@ func TestNewDataplaneSelection(t *testing.T) {
 
 func TestNewDataplaneRejectsBadConfig(t *testing.T) {
 	for name, cfg := range map[string]KubeOVNConfig{
-		"external subnet only":        {ExternalSubnet: "ext"},
 		"nad namespace only":          {NADNamespace: "vws-system"},
 		"snat only":                   {SNAT: true},
 		"in-cluster without external": {NADNamespace: "n", SNAT: true},
 		"snat without external":       {Kubeconfig: writeKubeconfig(t), NADNamespace: "n", SNAT: true},
 		"missing external subnet":     {Kubeconfig: writeKubeconfig(t), NADNamespace: "n"},
-		"missing nad namespace":       {Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext"},
 	} {
 		if _, err := newDataplane(cfg); !isInvalid(err) {
 			t.Fatalf("%s: err %v, want Invalid", name, err)
@@ -101,8 +99,8 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 		t.Fatalf("kubeconfig gave %T", svc.dp)
 	}
 	_ = svc.Close()
-	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !isInvalid(err) {
-		t.Fatalf("stray option err %v", err)
+	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !errors.Is(err, rest.ErrNotInCluster) {
+		t.Fatalf("external subnet without kubeconfig err %v, want ErrNotInCluster", err)
 	}
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "d.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{Kubeconfig: writeKubeconfig(t), NADNamespace: "vws-system"}}); !isInvalid(err) {
 		t.Fatalf("kubeconfig without external subnet err %v", err)
@@ -165,11 +163,21 @@ func TestInClusterErrorsNameTheMissingOption(t *testing.T) {
 	stubInCluster(t, "https://127.0.0.1:1", nil)
 	for want, cfg := range map[string]KubeOVNConfig{
 		"external subnet is required": {NADNamespace: "n"},
-		"nad namespace is required":   {ExternalSubnet: "ext"},
 	} {
 		_, err := newDataplane(cfg)
 		if !isInvalid(err) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("err %v, want Invalid containing %q", err, want)
 		}
+	}
+}
+
+func TestNADNamespaceDefaultsWhenSelected(t *testing.T) {
+	stubInCluster(t, "https://127.0.0.1:1", nil)
+	dp, err := newDataplane(KubeOVNConfig{ExternalSubnet: "ext"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dp.(*kubeOVN).nadNamespace; got != "vws-system" {
+		t.Fatalf("nad namespace %q, want vws-system", got)
 	}
 }

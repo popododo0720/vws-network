@@ -13,9 +13,9 @@ import (
 // KubeOVNConfig selects the Kube-OVN dataplane. A Kubeconfig selects it and
 // takes precedence. Without one, any other field selects it through the
 // in-cluster ServiceAccount. With neither, the in-process fake is used.
-// ExternalSubnet and NADNamespace are required once Kube-OVN is selected.
-// ExternalSubnet names the Kube-OVN Subnet that holds the elastic IP pool.
-// NADNamespace holds one NetworkAttachmentDefinition per subnet.
+// ExternalSubnet is required once Kube-OVN is selected. It names the Kube-OVN
+// Subnet that holds the elastic IP pool. NADNamespace holds one
+// NetworkAttachmentDefinition per subnet and defaults to defaultNADNamespace.
 type KubeOVNConfig struct {
 	Kubeconfig     string
 	ExternalSubnet string
@@ -23,6 +23,8 @@ type KubeOVNConfig struct {
 	// SNAT gives every subnet outbound SNAT through ExternalSubnet.
 	SNAT bool
 }
+
+const defaultNADNamespace = "vws-system"
 
 // inClusterConfig is a variable so tests can stand in for a pod.
 var inClusterConfig = rest.InClusterConfig
@@ -37,7 +39,7 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 		return newFake(), nil
 	}
 	if cfg.NADNamespace == "" {
-		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn nad namespace is required"}
+		cfg.NADNamespace = defaultNADNamespace
 	}
 	if cfg.ExternalSubnet == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn external subnet is required"}
