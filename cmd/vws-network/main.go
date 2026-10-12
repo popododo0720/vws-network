@@ -56,7 +56,7 @@ func main() {
 		}
 	}()
 
-	lis, err := net.Listen("tcp", *listen)
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *listen)
 	if err != nil {
 		log.Fatal(err)
 	}

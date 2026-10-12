@@ -85,6 +85,7 @@ func (s *Service) Close() error {
 	return s.repo.close()
 }
 
+//nolint:contextcheck // workers outlive the Open context and stop through Close
 func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix, workers int) (*Service, error) {
 	if err := validatePool(pool); err != nil {
 		return nil, err
@@ -1059,6 +1060,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 	// A claim that neither settles nor schedules a retry must not stay running.
 	// The next claim in this process would otherwise see the lane as blocked.
 	settled := false
+	//nolint:contextcheck // ctx may be cancelled here and the claim must still be released
 	defer func() {
 		if settled {
 			return
