@@ -59,6 +59,8 @@ func TestNewDataplaneRejectsBadConfig(t *testing.T) {
 	for name, cfg := range map[string]KubeOVNConfig{
 		"options without kubeconfig": {ExternalSubnet: "ext"},
 		"nad namespace only":         {NADNamespace: "vws-system"},
+		"snat without kubeconfig":    {SNAT: true},
+		"snat without external":      {Kubeconfig: writeKubeconfig(t), NADNamespace: "n", SNAT: true},
 		"missing nad namespace":      {Kubeconfig: writeKubeconfig(t)},
 	} {
 		if _, err := newDataplane(cfg); !isInvalid(err) {

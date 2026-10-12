@@ -15,18 +15,23 @@ type KubeOVNConfig struct {
 	Kubeconfig     string
 	ExternalSubnet string
 	NADNamespace   string
+	// SNAT gives every subnet outbound SNAT and needs ExternalSubnet.
+	SNAT bool
 }
 
 // newDataplane is the one place a Config becomes a dataplane.
 func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if cfg.Kubeconfig == "" {
-		if cfg.ExternalSubnet != "" || cfg.NADNamespace != "" {
+		if cfg.ExternalSubnet != "" || cfg.NADNamespace != "" || cfg.SNAT {
 			return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn options need a kubeconfig"}
 		}
 		return newFake(), nil
 	}
 	if cfg.NADNamespace == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn nad namespace is required"}
+	}
+	if cfg.SNAT && cfg.ExternalSubnet == "" {
+		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn snat needs an external subnet"}
 	}
 	rc, err := clientcmd.BuildConfigFromFlags("", cfg.Kubeconfig)
 	if err != nil {
@@ -36,5 +41,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT}, nil
 }

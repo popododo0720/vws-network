@@ -25,6 +25,7 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool")
 	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions")
+	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT; needs -kube-external-subnet")
 	flag.Parse()
 	if *kubeconfig != "" && *nadNamespace == "" {
 		*nadNamespace = "vws-system"
@@ -46,6 +47,7 @@ func main() {
 			Kubeconfig:     *kubeconfig,
 			ExternalSubnet: *externalSubnet,
 			NADNamespace:   *nadNamespace,
+			SNAT:           *snat,
 		},
 	})
 	if err != nil {

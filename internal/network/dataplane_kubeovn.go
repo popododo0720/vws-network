@@ -37,6 +37,8 @@ type kubeOVN struct {
 	externalSubnet string
 	// nadNamespace holds one NetworkAttachmentDefinition per subnet.
 	nadNamespace string
+	// snat gives every subnet outbound SNAT through externalSubnet.
+	snat bool
 }
 
 func (k *kubeOVN) ensure(ctx context.Context, gvk schema.GroupVersionKind, id string, spec map[string]any) error {
@@ -69,18 +71,32 @@ func (k *kubeOVN) ensureSubnet(ctx context.Context, s domain.Subnet) error {
 	if err := domain.CheckSubnetCIDR(anyIPv4, s.CIDR); err != nil {
 		return err
 	}
+	if k.snat && k.externalSubnet == "" {
+		return &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn external subnet is not configured"}
+	}
 	if err := k.ensureNAD(ctx, s.ID); err != nil {
 		return err
 	}
-	return k.ensure(ctx, gvkSubnet, string(s.ID), map[string]any{
+	if err := k.ensure(ctx, gvkSubnet, string(s.ID), map[string]any{
 		"vpc":       string(s.VPC),
 		"cidrBlock": s.CIDR.String(),
 		"protocol":  "IPv4",
 		"provider":  k.nadProvider(s.ID),
-	})
+	}); err != nil {
+		return err
+	}
+	if k.snat {
+		return k.ensureSNAT(ctx, s)
+	}
+	return nil
 }
 
 func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
+	if k.snat {
+		if err := k.deleteSNAT(ctx, s); err != nil {
+			return err
+		}
+	}
 	if err := k.remove(ctx, gvkSubnet, string(s.ID)); err != nil {
 		return err
 	}
