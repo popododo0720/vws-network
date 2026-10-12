@@ -17,13 +17,15 @@ import (
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
-// Config selects the durable store and the elastic IP pool.
+// Config selects the durable store, the elastic IP pool, and the dataplane.
 // DatabasePath is one SQLite file. AddressPool is a canonical IPv4 prefix
-// from /16 through /30. Workers 0 starts two workers.
+// from /16 through /30. Workers 0 starts two workers. A zero KubeOVN keeps
+// the in-process fake dataplane.
 type Config struct {
 	DatabasePath string
 	AddressPool  netip.Prefix
 	Workers      int
+	KubeOVN      KubeOVNConfig
 }
 
 // Service is the network control surface. Storage and the dataplane are
@@ -42,13 +44,18 @@ type Service struct {
 }
 
 // Open opens SQLite, requeues operations left running by the previous process,
-// and starts workers. The dataplane is the in-process fake.
+// and starts workers. The dataplane is Kube-OVN when cfg.KubeOVN has a
+// kubeconfig and the in-process fake otherwise.
 func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err
 	}
 	if cfg.DatabasePath == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "database path is required"}
+	}
+	dp, err := newDataplane(cfg.KubeOVN)
+	if err != nil {
+		return nil, err
 	}
 	repo, err := openSQLite(ctx, cfg.DatabasePath)
 	if err != nil {
@@ -58,7 +65,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if workers == 0 {
 		workers = 2
 	}
-	svc, err := start(ctx, repo, newFake(), cfg.AddressPool, workers)
+	svc, err := start(ctx, repo, dp, cfg.AddressPool, workers)
 	if err != nil {
 		_ = repo.close()
 		return nil, err
