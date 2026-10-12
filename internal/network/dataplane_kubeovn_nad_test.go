@@ -36,7 +36,7 @@ func TestKubeOVNSubnetOwnsOneNAD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, _, _ := unstructured.NestedString(o.Object, "spec", "config")
+	cfg := nestedString(o.Object, "spec", "config")
 	want := `{"cniVersion":"0.3.1","provider":"subnet-1.vws-system.ovn","server_socket":"/run/openvswitch/kube-ovn-daemon.sock","type":"kube-ovn"}`
 	if cfg != want {
 		t.Fatalf("config %s, want %s", cfg, want)

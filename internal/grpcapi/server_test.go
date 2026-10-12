@@ -86,7 +86,10 @@ func TestHandlersOverrideUnimplemented(t *testing.T) {
 				reflect.ValueOf(context.Background()),
 				reflect.Zero(m.Type().In(1)),
 			})
-			err, _ := out[1].Interface().(error)
+			var err error
+			if e, ok := out[1].Interface().(error); ok {
+				err = e
+			}
 			if status.Code(err) == codes.Unimplemented {
 				t.Fatalf("%s is still the unimplemented stub", method.MethodName)
 			}
@@ -103,22 +106,26 @@ func TestCreateVPCOverGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer closeOrFail(t, svc.Close)
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer()
 	Register(gs, svc)
-	go func() { _ = gs.Serve(lis) }()
+	go func() {
+		if err := gs.Serve(lis); err != nil {
+			t.Error(err)
+		}
+	}()
 	defer gs.Stop()
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer closeOrFail(t, conn.Close)
 	client := networkv1.NewVpcServiceClient(conn)
 	ops := longrunningpb.NewOperationsClient(conn)
 	parent := "projects/proj/regions/r1"
@@ -190,20 +197,24 @@ func TestRequestIDAndUpdateMask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	defer closeOrFail(t, svc.Close)
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer()
 	Register(gs, svc)
-	go func() { _ = gs.Serve(lis) }()
+	go func() {
+		if err := gs.Serve(lis); err != nil {
+			t.Error(err)
+		}
+	}()
 	defer gs.Stop()
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer closeOrFail(t, conn.Close)
 	vpcs := networkv1.NewVpcServiceClient(conn)
 	groups := networkv1.NewSecurityGroupServiceClient(conn)
 	parent := "projects/proj/regions/r1"
@@ -272,7 +283,6 @@ func TestAccountProjectStoresLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn := serve(t, svc)
-	defer conn.Close()
 	vpcs := networkv1.NewVpcServiceClient(conn)
 	subs := networkv1.NewSubnetServiceClient(conn)
 	groups := networkv1.NewSecurityGroupServiceClient(conn)
@@ -432,7 +442,7 @@ func TestAccountProjectStoresLabels(t *testing.T) {
 		t.Fatalf("address %+v err %v", addr, err)
 	}
 
-	conn.Close()
+	closeOrFail(t, conn.Close)
 	if err := svc.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -440,9 +450,9 @@ func TestAccountProjectStoresLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer closeOrFail(t, svc.Close)
 	conn = serve(t, svc)
-	defer conn.Close()
+	defer closeOrFail(t, conn.Close)
 	vpcs = networkv1.NewVpcServiceClient(conn)
 	subs = networkv1.NewSubnetServiceClient(conn)
 	groups = networkv1.NewSecurityGroupServiceClient(conn)
@@ -467,13 +477,17 @@ func TestAccountProjectStoresLabels(t *testing.T) {
 
 func serve(t *testing.T, svc *network.Service) *grpc.ClientConn {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer()
 	Register(gs, svc)
-	go func() { _ = gs.Serve(lis) }()
+	go func() {
+		if err := gs.Serve(lis); err != nil {
+			t.Error(err)
+		}
+	}()
 	t.Cleanup(gs.Stop)
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -510,9 +524,9 @@ func TestAddressVPCAndAssociation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer closeOrFail(t, svc.Close)
 	conn := serve(t, svc)
-	defer conn.Close()
+	defer closeOrFail(t, conn.Close)
 	vpcs := networkv1.NewVpcServiceClient(conn)
 	addrs := networkv1.NewAddressServiceClient(conn)
 	parent := "projects/a1001/regions/r1"
@@ -638,5 +652,12 @@ func TestAddressVPCAndAssociation(t *testing.T) {
 	}
 	if got := get("made").GetSpec().GetVpc(); got != vpcName {
 		t.Fatalf("created through update, vpc = %q", got)
+	}
+}
+
+func closeOrFail(t testing.TB, f func() error) {
+	t.Helper()
+	if err := f(); err != nil {
+		t.Error(err)
 	}
 }

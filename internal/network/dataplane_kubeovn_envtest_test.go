@@ -37,7 +37,7 @@ func startEnv(t *testing.T) (*envtest.Environment, client.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = env.Stop() })
+	t.Cleanup(func() { closeOrFail(t, env.Stop) })
 	c, err := client.New(cfg, client.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestEnvtestSubnetAndSNATLifecycle(t *testing.T) {
 		}
 	}
 	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
-	if lan, _, _ := unstructured.NestedString(gw.Object, "spec", "lanIp"); lan != "10.0.1.254" {
+	if lan := nestedString(gw.Object, "spec", "lanIp"); lan != "10.0.1.254" {
 		t.Fatalf("lanIp %q", lan)
 	}
 	getObj(t, c, gvkSnat, "snat-subnet-1")
@@ -114,11 +114,14 @@ func TestEnvtestRulesAndElasticIP(t *testing.T) {
 		}
 	}
 	g := getObj(t, c, gvkGroup, "sg-1")
-	rules, _, _ := unstructured.NestedSlice(g.Object, "spec", "ingressRules")
+	rules := nestedSlice(g.Object, "spec", "ingressRules")
 	if len(rules) != 1 {
 		t.Fatalf("ingress rules %v", rules)
 	}
-	first, _ := rules[0].(map[string]any)
+	first, ok := rules[0].(map[string]any)
+	if !ok {
+		t.Fatalf("stored rule %T", rules[0])
+	}
 	if first["portRangeMin"] != int64(22) || first["remoteAddress"] != "0.0.0.0/0" {
 		t.Fatalf("stored rule %v", first)
 	}
@@ -126,7 +129,7 @@ func TestEnvtestRulesAndElasticIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	g = getObj(t, c, gvkGroup, "sg-1")
-	if rules, _, _ := unstructured.NestedSlice(g.Object, "spec", "ingressRules"); len(rules) != 0 {
+	if rules := nestedSlice(g.Object, "spec", "ingressRules"); len(rules) != 0 {
 		t.Fatalf("rule survived delete: %v", rules)
 	}
 
@@ -191,7 +194,7 @@ func TestEnvtestServiceThroughOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = svc.Close() }()
+	defer closeOrFail(t, svc.Close)
 	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +241,7 @@ func TestEnvtestGatewayMovesWhenHostSubnetIsDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
-	if host, _, _ := unstructured.NestedString(gw.Object, "spec", "subnet"); host != "subnet-b" {
+	if host := nestedString(gw.Object, "spec", "subnet"); host != "subnet-b" {
 		t.Fatalf("gateway host %q, want subnet-b", host)
 	}
 	if err := k.deleteSubnet(ctx, b); err != nil {
@@ -248,4 +251,9 @@ func TestEnvtestGatewayMovesWhenHostSubnetIsDeleted(t *testing.T) {
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("gateway after last subnet: %v", err)
 	}
+}
+
+func nestedSlice(obj map[string]any, fields ...string) []any {
+	v, _, _ := unstructured.NestedSlice(obj, fields...) //nolint:errcheck // absent and mistyped both read as empty
+	return v
 }

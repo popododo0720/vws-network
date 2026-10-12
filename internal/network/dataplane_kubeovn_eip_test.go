@@ -29,14 +29,14 @@ func TestKubeOVNElasticIPLifecycle(t *testing.T) {
 		}
 	}
 	eip := getObj(t, c, gvkEip, "eip-1")
-	spec, _, _ := unstructured.NestedStringMap(eip.Object, "spec")
+	spec := nestedStringMap(eip.Object, "spec")
 	for key, w := range map[string]string{"externalSubnet": "external", "v4ip": "198.51.100.7", "type": "nat"} {
 		if spec[key] != w {
 			t.Fatalf("eip spec[%s] = %q, want %q", key, spec[key], w)
 		}
 	}
 	fip := getObj(t, c, gvkFip, "eip-1-10-0-1-5")
-	spec, _, _ = unstructured.NestedStringMap(fip.Object, "spec")
+	spec = nestedStringMap(fip.Object, "spec")
 	for key, w := range map[string]string{"ovnEip": "eip-1", "vpc": "vpc-1", "v4Ip": "10.0.1.5"} {
 		if spec[key] != w {
 			t.Fatalf("fip spec[%s] = %q, want %q", key, spec[key], w)
