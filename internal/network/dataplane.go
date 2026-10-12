@@ -22,4 +22,6 @@ type dataplane interface {
 	deleteElasticIP(ctx context.Context, e domain.ElasticIP) error
 	ensureNAT(ctx context.Context, e domain.ElasticIP, private netip.Addr) error
 	deleteNAT(ctx context.Context, e domain.ElasticIP, private netip.Addr) error
+	// ready reads, never writes, to prove the dataplane can be reached.
+	ready(ctx context.Context) error
 }

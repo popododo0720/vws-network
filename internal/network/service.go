@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/popododo0720/vws-network/internal/domain"
@@ -43,6 +44,8 @@ type Service struct {
 	maxAttempts int
 	backoff     func(attempts int) time.Duration
 	logf        func(string, ...any)
+	// heartbeat is the unix nanosecond time a worker loop last went round.
+	heartbeat atomic.Int64
 }
 
 // Open opens SQLite, requeues operations left running by the previous process,
@@ -86,6 +89,27 @@ func (s *Service) Close() error {
 	return s.repo.close()
 }
 
+// staleHeartbeat is how long a worker loop may go without a round before the
+// service is not ready. One round can include a dataplane call.
+const staleHeartbeat = time.Minute
+
+// Ready reports whether the service can do work: the store answers, the worker
+// loops go round, and the dataplane answers a read. Liveness is not this.
+func (s *Service) Ready(ctx context.Context) error {
+	if err := s.repo.ping(ctx); err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	if s.stop != nil {
+		if last := time.Unix(0, s.heartbeat.Load()); s.now().Sub(last) > staleHeartbeat {
+			return fmt.Errorf("workers: no round since %s", last.Format(time.RFC3339))
+		}
+	}
+	if err := s.dp.ready(ctx); err != nil {
+		return fmt.Errorf("dataplane: %w", err)
+	}
+	return nil
+}
+
 //nolint:contextcheck // workers outlive the Open context and stop through Close
 func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix, workers int) (*Service, error) {
 	if err := validatePool(pool); err != nil {
@@ -115,6 +139,7 @@ func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix
 				s.loop(workerCtx)
 			}()
 		}
+		s.heartbeat.Store(s.now().UnixNano())
 		s.stop = func() {
 			cancel()
 			wg.Wait()
@@ -1031,6 +1056,7 @@ func fingerprint(typ domain.OperationType, req any) ([32]byte, error) {
 
 func (s *Service) loop(ctx context.Context) {
 	for {
+		s.heartbeat.Store(s.now().UnixNano())
 		if ctx.Err() != nil {
 			return
 		}

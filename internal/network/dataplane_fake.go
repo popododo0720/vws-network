@@ -108,3 +108,5 @@ func (f *fakeDataplane) deleteNAT(_ context.Context, e domain.ElasticIP, private
 }
 
 var _ dataplane = (*fakeDataplane)(nil)
+
+func (f *fakeDataplane) ready(context.Context) error { return nil }

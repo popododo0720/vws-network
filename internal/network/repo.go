@@ -26,6 +26,7 @@ type repository interface {
 	commit(ctx context.Context, c commit) error
 	claim(ctx context.Context, now time.Time, token string) (job, bool, error)
 	requeue(ctx context.Context) error
+	ping(ctx context.Context) error
 	close() error
 }
 

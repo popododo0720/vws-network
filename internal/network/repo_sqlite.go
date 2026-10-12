@@ -206,6 +206,14 @@ func closeLogged(c io.Closer) {
 	}
 }
 
+func (r *sqliteRepo) ping(ctx context.Context) error {
+	var one int
+	if err := r.db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		return fmt.Errorf("ping sqlite: %w", err)
+	}
+	return nil
+}
+
 func (r *sqliteRepo) close() error {
 	if err := r.db.Close(); err != nil {
 		return fmt.Errorf("close sqlite: %w", err)

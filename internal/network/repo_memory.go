@@ -44,6 +44,14 @@ func (r *memRepo) unlock() { <-r.mu }
 
 func (r *memRepo) close() error { return nil }
 
+func (r *memRepo) ping(ctx context.Context) error {
+	if err := r.lock(ctx); err != nil {
+		return err
+	}
+	r.unlock()
+	return nil
+}
+
 func (r *memRepo) load(ctx context.Context, p domain.ProjectID) (domain.State, int64, error) {
 	if err := r.lock(ctx); err != nil {
 		return domain.State{}, 0, err
