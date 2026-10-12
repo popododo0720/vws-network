@@ -2,8 +2,12 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
+	"reflect"
+	"slices"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,7 +32,7 @@ var (
 
 // kubeOVN is the dataplane backed by Kube-OVN custom resources. Every object
 // is cluster scoped and named by its resource id. Create never overwrites:
-// CIDRs are immutable, so an existing object already is the desired state.
+// an existing object must carry the same id and spec, or ensure fails.
 //
 // externalSubnet names the Kube-OVN Subnet that holds the elastic IP pool.
 // It is the only place the pool is named; addresses come from the domain.
@@ -41,12 +45,48 @@ type kubeOVN struct {
 	snat bool
 }
 
-func (k *kubeOVN) ensure(ctx context.Context, gvk schema.GroupVersionKind, id string, spec map[string]any) error {
-	o := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+// ensure creates the object, or accepts the existing one when it carries the
+// same id annotation and every field of spec we set is equal. A different id
+// or a different field is a Conflict: it never retries and never overwrites,
+// because an overwrite would break a running resource. Fields named in ignore
+// belong to another writer and are not compared.
+func (k *kubeOVN) ensure(ctx context.Context, gvk schema.GroupVersionKind, id string, spec map[string]any, ignore ...string) error {
+	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(gvk)
 	o.SetName(id)
-	o.SetAnnotations(map[string]string{annotationID: id})
-	return client.IgnoreAlreadyExists(k.c.Create(ctx, o))
+	return k.ensureObject(ctx, o, id, spec, ignore...)
+}
+
+func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured, id string, spec map[string]any, ignore ...string) error {
+	key := client.ObjectKeyFromObject(o)
+	want := o.DeepCopy()
+	want.Object["spec"] = spec
+	want.SetAnnotations(map[string]string{annotationID: id})
+	err := k.c.Create(ctx, want)
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	have := o.DeepCopy()
+	if err := k.c.Get(ctx, key, have); err != nil {
+		return err
+	}
+	kind := o.GetKind()
+	if have.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("%s %s is being deleted", kind, key)
+	}
+	if got := have.GetAnnotations()[annotationID]; got != id {
+		return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has id annotation %q, want %q", kind, key, got, id)}
+	}
+	haveSpec, _, _ := unstructured.NestedMap(have.Object, "spec")
+	for field, w := range spec {
+		if slices.Contains(ignore, field) {
+			continue
+		}
+		if !reflect.DeepEqual(haveSpec[field], w) {
+			return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has spec.%s %v, want %v", kind, key, field, haveSpec[field], w)}
+		}
+	}
+	return nil
 }
 
 func (k *kubeOVN) remove(ctx context.Context, gvk schema.GroupVersionKind, id string) error {
