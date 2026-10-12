@@ -661,3 +661,15 @@ func closeOrFail(t testing.TB, f func() error) {
 		t.Error(err)
 	}
 }
+
+func TestFailedDataplaneOperationError(t *testing.T) {
+	op := domain.Operation{ID: "op1", State: domain.OpFailed, Err: &domain.Error{Kind: domain.Dataplane, Msg: "dataplane reconciliation failed"}}
+	out, err := (&handler{}).toOp("proj", "", "projects/proj/vpcs/v", commonv1.OperationVerb_OPERATION_VERB_CREATE, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.GetError()
+	if !out.Done || codes.Code(got.GetCode()) != codes.Unavailable || got.GetMessage() != "dataplane reconciliation failed" {
+		t.Fatalf("error = %v", got)
+	}
+}
