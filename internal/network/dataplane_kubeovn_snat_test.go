@@ -134,10 +134,8 @@ func TestKubeOVNSubnetWithoutSNAT(t *testing.T) {
 
 func gatewayHost(t *testing.T, c client.Client) (string, string) {
 	t.Helper()
-	spec, _, _ := unstructured.NestedMap(getObj(t, c, gvkNatGW, "nat-vpc-1").Object, "spec")
-	host, _ := spec["subnet"].(string)
-	lan, _ := spec["lanIp"].(string)
-	return host, lan
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	return nestedString(gw.Object, "spec", "subnet"), nestedString(gw.Object, "spec", "lanIp")
 }
 
 func TestKubeOVNDeletingGatewayHostMovesGateway(t *testing.T) {
