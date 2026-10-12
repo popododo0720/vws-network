@@ -131,3 +131,115 @@ func TestKubeOVNSubnetWithoutSNAT(t *testing.T) {
 	absent(t, c, "nat-vpc-1", "gw")
 	absent(t, c, "snat-subnet-a", "rule")
 }
+
+func gatewayHost(t *testing.T, c client.Client) (string, string) {
+	t.Helper()
+	spec, _, _ := unstructured.NestedMap(getObj(t, c, gvkNatGW, "nat-vpc-1").Object, "spec")
+	host, _ := spec["subnet"].(string)
+	lan, _ := spec["lanIp"].(string)
+	return host, lan
+}
+
+func TestKubeOVNDeletingGatewayHostMovesGateway(t *testing.T) {
+	ctx := context.Background()
+	k, c := snatKube()
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	other := domain.Subnet{ID: "subnet-0", VPC: "vpc-2", CIDR: mustP("10.1.0.0/24")}
+	for _, s := range []domain.Subnet{a, b, other} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := k.deleteSubnet(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if host, lan := gatewayHost(t, c); host != "subnet-b" || lan != "10.0.2.254" {
+		t.Fatalf("gateway on %s %s, want subnet-b 10.0.2.254", host, lan)
+	}
+	getObj(t, c, gvkSnat, "snat-subnet-b")
+	getObj(t, c, gvkNatGW, "nat-vpc-2")
+	if err := k.deleteSubnet(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	absent(t, c, "nat-vpc-1", "gw")
+	getObj(t, c, gvkNatGW, "nat-vpc-2")
+}
+
+func TestKubeOVNDeleteHostRecreatesLostGateway(t *testing.T) {
+	ctx := context.Background()
+	k, c := snatKube()
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	for _, s := range []domain.Subnet{a, b} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.remove(ctx, gvkNatGW, "nat-vpc-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.deleteSubnet(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if host, _ := gatewayHost(t, c); host != "subnet-b" {
+		t.Fatalf("gateway on %s, want subnet-b", host)
+	}
+}
+
+func TestKubeOVNDeleteHostWaitsForTerminatingGateway(t *testing.T) {
+	ctx := context.Background()
+	k, c := snatKube()
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	for _, s := range []domain.Subnet{a, b} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	gw.SetFinalizers([]string{"vws.test/hold"})
+	if err := c.Update(ctx, gw); err != nil {
+		t.Fatal(err)
+	}
+	err := k.deleteSubnet(ctx, a)
+	if err == nil || isInvalid(err) || isConflict(err) {
+		t.Fatalf("err %v, want a retryable error", err)
+	}
+	gw = getObj(t, c, gvkNatGW, "nat-vpc-1")
+	gw.SetFinalizers(nil)
+	if err := c.Update(ctx, gw); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.deleteSubnet(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if host, _ := gatewayHost(t, c); host != "subnet-b" {
+		t.Fatalf("gateway on %s, want subnet-b", host)
+	}
+}
+
+func TestKubeOVNRehomeKeepsForeignGateway(t *testing.T) {
+	ctx := context.Background()
+	k, c := snatKube()
+	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
+	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
+	for _, s := range []domain.Subnet{a, b} {
+		if err := k.ensureSubnet(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	gw.SetAnnotations(map[string]string{annotationID: "someone-else"})
+	if err := c.Update(ctx, gw); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.deleteSubnet(ctx, a); !isConflict(err) {
+		t.Fatalf("err %v, want conflict", err)
+	}
+	if host, _ := gatewayHost(t, c); host != "subnet-a" {
+		t.Fatalf("foreign gateway moved to %s", host)
+	}
+}
