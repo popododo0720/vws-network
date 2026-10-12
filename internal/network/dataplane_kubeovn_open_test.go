@@ -2,9 +2,13 @@ package network
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"k8s.io/client-go/rest"
 )
 
 const kubeconfigYAML = `apiVersion: v1
@@ -57,12 +61,13 @@ func TestNewDataplaneSelection(t *testing.T) {
 
 func TestNewDataplaneRejectsBadConfig(t *testing.T) {
 	for name, cfg := range map[string]KubeOVNConfig{
-		"options without kubeconfig": {ExternalSubnet: "ext"},
-		"nad namespace only":         {NADNamespace: "vws-system"},
-		"snat without kubeconfig":    {SNAT: true},
-		"snat without external":      {Kubeconfig: writeKubeconfig(t), NADNamespace: "n", SNAT: true},
-		"missing external subnet":    {Kubeconfig: writeKubeconfig(t), NADNamespace: "n"},
-		"missing nad namespace":      {Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext"},
+		"external subnet only":        {ExternalSubnet: "ext"},
+		"nad namespace only":          {NADNamespace: "vws-system"},
+		"snat only":                   {SNAT: true},
+		"in-cluster without external": {NADNamespace: "n", SNAT: true},
+		"snat without external":       {Kubeconfig: writeKubeconfig(t), NADNamespace: "n", SNAT: true},
+		"missing external subnet":     {Kubeconfig: writeKubeconfig(t), NADNamespace: "n"},
+		"missing nad namespace":       {Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext"},
 	} {
 		if _, err := newDataplane(cfg); !isInvalid(err) {
 			t.Fatalf("%s: err %v, want Invalid", name, err)
@@ -73,7 +78,7 @@ func TestNewDataplaneRejectsBadConfig(t *testing.T) {
 	}
 }
 
-func TestOpenUsesKubeOVNOnlyWithKubeconfig(t *testing.T) {
+func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 	ctx := context.Background()
 	pool := mustP("198.51.100.0/24")
 	svc, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "a.db"), AddressPool: pool})
@@ -101,5 +106,70 @@ func TestOpenUsesKubeOVNOnlyWithKubeconfig(t *testing.T) {
 	}
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "d.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{Kubeconfig: writeKubeconfig(t), NADNamespace: "vws-system"}}); !isInvalid(err) {
 		t.Fatalf("kubeconfig without external subnet err %v", err)
+	}
+}
+
+func stubInCluster(t *testing.T, host string, err error) {
+	t.Helper()
+	old := inClusterConfig
+	inClusterConfig = func() (*rest.Config, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &rest.Config{Host: host}, nil
+	}
+	t.Cleanup(func() { inClusterConfig = old })
+}
+
+func TestNewDataplaneInClusterWithoutKubeconfig(t *testing.T) {
+	stubInCluster(t, "https://127.0.0.1:1", nil)
+	dp, err := newDataplane(KubeOVNConfig{ExternalSubnet: "ext", NADNamespace: "vws-system", SNAT: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, ok := dp.(*kubeOVN)
+	if !ok {
+		t.Fatalf("in-cluster gave %T, want *kubeOVN", dp)
+	}
+	if k.externalSubnet != "ext" || k.nadNamespace != "vws-system" || !k.snat {
+		t.Fatalf("kube config %q %q %v", k.externalSubnet, k.nadNamespace, k.snat)
+	}
+}
+
+func TestNewDataplaneKubeconfigBeatsInCluster(t *testing.T) {
+	stubInCluster(t, "", errors.New("in-cluster must not be read"))
+	dp, err := newDataplane(KubeOVNConfig{Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext", NADNamespace: "vws-system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := dp.(*kubeOVN); !ok {
+		t.Fatalf("kubeconfig gave %T", dp)
+	}
+}
+
+func TestNewDataplaneNotInCluster(t *testing.T) {
+	stubInCluster(t, "", rest.ErrNotInCluster)
+	_, err := newDataplane(KubeOVNConfig{ExternalSubnet: "ext", NADNamespace: "vws-system"})
+	if !errors.Is(err, rest.ErrNotInCluster) {
+		t.Fatalf("err %v, want ErrNotInCluster", err)
+	}
+	if !strings.Contains(err.Error(), "kube-ovn needs -kubeconfig or an in-cluster service account") {
+		t.Fatalf("err %q lacks the remedy", err)
+	}
+	if _, err := newDataplane(KubeOVNConfig{}); err != nil {
+		t.Fatalf("fake dataplane read the in-cluster config: %v", err)
+	}
+}
+
+func TestInClusterErrorsNameTheMissingOption(t *testing.T) {
+	stubInCluster(t, "https://127.0.0.1:1", nil)
+	for want, cfg := range map[string]KubeOVNConfig{
+		"external subnet is required": {NADNamespace: "n"},
+		"nad namespace is required":   {ExternalSubnet: "ext"},
+	} {
+		_, err := newDataplane(cfg)
+		if !isInvalid(err) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err %v, want Invalid containing %q", err, want)
+		}
 	}
 }
