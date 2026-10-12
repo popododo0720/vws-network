@@ -83,7 +83,7 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := svc.dp.(*fakeDataplane); !ok {
+	if _, ok := svc.dp.(measured).dataplane.(*fakeDataplane); !ok {
 		t.Fatalf("no kubeconfig gave %T", svc.dp)
 	}
 	closeOrFail(t, svc.Close)
@@ -95,7 +95,7 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := svc.dp.(*kubeOVN); !ok {
+	if _, ok := svc.dp.(measured).dataplane.(*kubeOVN); !ok {
 		t.Fatalf("kubeconfig gave %T", svc.dp)
 	}
 	closeOrFail(t, svc.Close)

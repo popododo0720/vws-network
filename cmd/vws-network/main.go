@@ -3,9 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+
+	"github.com/popododo0720/vws-lib/obs"
+	"github.com/popododo0720/vws-lib/obs/health"
 
 	"github.com/popododo0720/vws-network/internal/grpcapi"
 	"github.com/popododo0720/vws-network/internal/network"
@@ -34,43 +38,60 @@ func main() {
 	}
 	pool, err := netip.ParsePrefix(*poolFlag)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "-pool:", err)
+		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	svc, err := network.Open(ctx, network.Config{
-		DatabasePath: *dbPath,
-		AddressPool:  pool,
-		KubeOVN: network.KubeOVNConfig{
-			Kubeconfig:     *kubeconfig,
-			ExternalSubnet: *externalSubnet,
-			NADNamespace:   *nadNamespace,
-			SNAT:           *snat,
-		},
-	})
+	if err := run(ctx, *listen, *dbPath, pool, network.KubeOVNConfig{
+		Kubeconfig:     *kubeconfig,
+		ExternalSubnet: *externalSubnet,
+		NADNamespace:   *nadNamespace,
+		SNAT:           *snat,
+	}); err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelError, "vws-network stopped", slog.String(obs.FieldErr, err.Error()))
+		stop()
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, listen, dbPath string, pool netip.Prefix, kube network.KubeOVNConfig) (err error) {
+	shutdown, err := obs.Setup(ctx, obs.ForService(grpcapi.ServiceName))
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("obs setup: %w", err)
 	}
 	defer func() {
-		if err := svc.Close(); err != nil {
-			log.Printf("close: %v", err)
+		if serr := shutdown(context.WithoutCancel(ctx)); serr != nil {
+			err = errors.Join(err, fmt.Errorf("obs shutdown: %w", serr))
 		}
 	}()
-
-	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *listen)
+	svc, err := network.Open(ctx, network.Config{DatabasePath: dbPath, AddressPool: pool, KubeOVN: kube})
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("open: %w", err)
+	}
+	defer func() {
+		if cerr := svc.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close: %w", cerr))
+		}
+	}()
+	health.Default().Register("network", svc.Ready)
+
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
 	}
 	srv := grpc.NewServer(grpcapi.ServerOptions()...)
 	grpcapi.Register(srv, svc)
-	health := grpcapi.RegisterHealth(srv, svc.Ready)
-	go health.Run(ctx, 5*time.Second)
+	grpcHealth := grpcapi.RegisterHealth(srv, svc.Ready)
+	go grpcHealth.Run(ctx, 5*time.Second)
 	go func() {
 		<-ctx.Done()
-		health.Shutdown()
+		health.Default().NotReady()
+		grpcHealth.Shutdown()
 		srv.GracefulStop()
 	}()
 	if err := srv.Serve(lis); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("serve: %w", err)
 	}
+	return nil
 }

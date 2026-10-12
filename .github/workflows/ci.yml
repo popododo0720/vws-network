@@ -17,6 +17,8 @@ jobs:
           go-version: "1.26.0"
       - name: gofmt
         run: test -z "$(gofmt -l .)"
+      - name: vendored vws-lib
+        run: VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check
       - name: test
         run: go test ./...
       - name: envtest

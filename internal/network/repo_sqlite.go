@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/netip"
 	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the pure-Go sqlite driver
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-network/internal/domain"
 )
@@ -102,7 +104,7 @@ func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
 	if err != nil {
 		return fmt.Errorf("migrateSQLite: %w", err)
 	}
-	defer rollback(tx)
+	defer rollback(ctx, tx)
 	for version < schemaVersion {
 		switch version {
 		case 1:
@@ -193,16 +195,16 @@ func rollbackOn(err error, tx *sql.Tx) error {
 // rollback is the deferred rollback of a transaction that may have committed.
 // sql.ErrTxDone is the normal result after Commit. Any other failure is logged
 // because the caller is already returning.
-func rollback(tx *sql.Tx) {
+func rollback(ctx context.Context, tx *sql.Tx) {
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		log.Printf("network: rollback: %v", err)
+		slog.Default().LogAttrs(ctx, slog.LevelError, "sqlite rollback", slog.String(obs.FieldErr, err.Error()))
 	}
 }
 
 // closeLogged closes a read-only cursor whose error cannot change the result.
-func closeLogged(c io.Closer) {
+func closeLogged(ctx context.Context, c io.Closer) {
 	if err := c.Close(); err != nil {
-		log.Printf("network: close: %v", err)
+		slog.Default().LogAttrs(ctx, slog.LevelError, "sqlite close", slog.String(obs.FieldErr, err.Error()))
 	}
 }
 
@@ -251,7 +253,7 @@ func (r *sqliteRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, e
 	if err != nil {
 		return nil, fmt.Errorf("addressesInUse: %w", err)
 	}
-	defer closeLogged(rows)
+	defer closeLogged(ctx, rows)
 	out := map[netip.Addr]bool{}
 	for rows.Next() {
 		var raw string
@@ -314,7 +316,7 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 	if err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-	defer rollback(tx)
+	defer rollback(ctx, tx)
 	if c.settle != nil {
 		terminal, err := settleAllowed(ctx, tx, *c.settle)
 		if err != nil {
@@ -497,7 +499,7 @@ func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nonTerminal: %w", err)
 	}
-	defer closeLogged(rows)
+	defer closeLogged(ctx, rows)
 	var jobs []job
 	for rows.Next() {
 		j, err := scanJob(rows)

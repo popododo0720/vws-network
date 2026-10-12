@@ -26,4 +26,22 @@ go test ./...
 
 `third_party/vws-proto`는 `github.com/popododo0720/vws-proto`의 `main` `a1c6084`이다. `go.mod`의 replace가 그 경로를 가리킨다. vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
+`third_party/vws-lib`는 `github.com/popododo0720/vws-lib`의 `v0.1.0`(`aed8476`)이다. `scripts/vendor-lib.sh vendor v0.1.0`으로 복사했고 replace로 쓴다. CI는 `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check`로 사본이 바뀌지 않았는지 본다. 사본은 고치지 않는다.
+
+## 관측성
+
+`main`이 `obs.Setup`을 한 번 부르고 끝날 때 shutdown한다. 로그는 slog JSON이다. 메트릭은 `vws.rpc.server.*`, `vws.reconcile.total`·`vws.reconcile.duration`(데이터플레인 ensure 호출, `controller`=`network.<종류>`, `result`=`ok`·`conflict`·`error`), `vws.audit.events`(변경 RPC), `vws.panics`, `vws.errors`다. 레이블에 리소스 id나 요청 id는 넣지 않는다.
+
+이 서비스가 읽는 환경 변수:
+
+| 변수 | 뜻 |
+| --- | --- |
+| `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SDK_DISABLED` | 표준 OpenTelemetry 설정. `OTEL_EXPORTER_OTLP_ENDPOINT`가 비면 아무것도 내보내지 않는다. |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | `SENTRY_DSN`이 있을 때만 Sentry로 보낸다. |
+| `VWS_LOG_LEVEL` | `debug`, `info`(기본), `warn`, `error`. |
+| `VWS_LOG_FORMAT` | `json`(기본) 또는 `text`. |
+| `VWS_HEALTH_ADDR` | `/healthz`, `/readyz` 주소. 비면 열지 않는다. `/readyz`는 `(*Service).Ready`를 부르고, SIGTERM 뒤에는 실패한다. |
+
+gRPC health는 `docs/health.md`에 있다.
+
 배포용 매니페스트는 두지 않는다.
