@@ -11,9 +11,13 @@ import (
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
+// annotationPrefix starts every annotation key a VWS service writes, in every
+// repository. A key is annotationPrefix plus a short lowercase name.
+const annotationPrefix = "vws.popododo0720.io/"
+
 // annotationID holds the AWS-style id on every object this dataplane creates.
 // The object name is the same id, so a lookup never lists.
-const annotationID = "vws.popododo0720.io/id"
+const annotationID = annotationPrefix + "id"
 
 var (
 	gvkVpc    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Vpc"}
