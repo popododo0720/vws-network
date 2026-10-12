@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -62,8 +63,11 @@ func main() {
 	}
 	srv := grpc.NewServer(grpcapi.ServerOptions()...)
 	grpcapi.Register(srv, svc)
+	health := grpcapi.RegisterHealth(srv, svc.Ready)
+	go health.Run(ctx, 5*time.Second)
 	go func() {
 		<-ctx.Done()
+		health.Shutdown()
 		srv.GracefulStop()
 	}()
 	if err := srv.Serve(lis); err != nil {

@@ -190,3 +190,14 @@ func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
 }
 
 var _ dataplane = (*kubeOVN)(nil)
+
+// ready reads the external Subnet. It proves the API server answers, the
+// Kube-OVN CRDs are installed and the service account can read them.
+func (k *kubeOVN) ready(ctx context.Context) error {
+	o := &unstructured.Unstructured{}
+	o.SetGroupVersionKind(gvkSubnet)
+	if err := k.c.Get(ctx, client.ObjectKey{Name: k.externalSubnet}, o); err != nil {
+		return fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
+	}
+	return nil
+}

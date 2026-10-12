@@ -43,6 +43,7 @@
 | 포맷, 테스트, 린트가 통과해야 한다. | `.github/workflows/ci.yml`의 `gofmt`, `go test ./...`, `envtest`, `golangci-lint` |
 | `main`에 직접 푸시하지 않고, 커밋은 원자적으로 나눈다. | 아래 절차. 브랜치 보호는 저장소 설정이다. |
 | 설계와 반복되는 실수는 pstack으로 다룬다. | 아래 pstack 절차. 판단이라 린트로 막지 않는다. |
+| `grpc.health.v1`은 `""`와 등록된 모든 gRPC 서비스 이름에 한 상태를 준다. SERVING은 SQLite 응답, 워커 heartbeat, 데이터플레인 읽기(Kube-OVN은 외부 Subnet Get)가 모두 성공할 때다. 종료는 `GracefulStop` 전에 NOT_SERVING이다. | `(*Service).Ready`, `RegisterHealth`, `(*Health).Shutdown`, `TestReady`, `TestHealthNamesEveryRegisteredService`, `TestHealthWatchSeesFlipAndShutdown`, `TestEnvtestReadyReadsExternalSubnet` |
 
 ## 브랜치와 원자적 커밋
 
