@@ -2,13 +2,15 @@ package grpcapi
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sort"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/popododo0720/vws-lib/obs"
 )
 
 const readyBudget = 2 * time.Second
@@ -52,7 +54,7 @@ func (h *Health) check(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, readyBudget)
 	defer cancel()
 	if err := h.ready(ctx); err != nil {
-		log.Printf("health: not serving: %v", err)
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "not serving", slog.String(obs.FieldErr, err.Error()))
 		h.set(healthpb.HealthCheckResponse_NOT_SERVING)
 		return
 	}

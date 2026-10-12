@@ -45,6 +45,7 @@
 | `main`에 직접 푸시하지 않고, 커밋은 원자적으로 나눈다. | 아래 절차. 브랜치 보호는 저장소 설정이다. |
 | 설계와 반복되는 실수는 pstack으로 다룬다. | 아래 pstack 절차. 판단이라 린트로 막지 않는다. |
 | `grpc.health.v1`은 `""`와 등록된 모든 gRPC 서비스 이름에 한 상태를 준다. SERVING은 SQLite 응답, 워커 heartbeat, 데이터플레인 읽기(Kube-OVN은 외부 Subnet Get)가 모두 성공할 때다. 종료는 `GracefulStop` 전에 NOT_SERVING이다. | `(*Service).Ready`, `RegisterHealth`, `(*Health).Shutdown`, `TestReady`, `TestHealthNamesEveryRegisteredService`, `TestHealthWatchSeesFlipAndShutdown`, `TestEnvtestReadyReadsExternalSubnet` |
+| 관측성은 vws-lib `v0.1.0` 사본(`third_party/vws-lib`)만 쓴다. `main`이 `obs.Setup`을 한 번 부르고, 로그는 slog뿐이며 `log`와 sentry-go는 import하지 않는다. 서버 인터셉터는 `ServerOptions` 한 곳이고, 핸들러의 gRPC 상태(코드, 메시지, ErrorInfo)를 바꾸지 않는다. Kube-OVN 충돌은 `AlreadyExists`다. 데이터플레인 ensure는 `vws.reconcile.*`에 `controller`와 `result`(ok, conflict, error) 레이블만 단다. `/readyz`는 `(*Service).Ready`를 부른다. | `.golangci.yml`(depguard no-sentry-direct, no-std-log), `scripts/vendor-lib.sh check`, `ServerOptions`, `measured`, `TestServerOptionsKeepConflictStatus`, `TestEnsureMetricsCountResultWithFixedLabels`, `TestAuditedMethods` |
 
 ## 브랜치와 원자적 커밋
 

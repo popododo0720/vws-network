@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/netip"
 	"runtime/debug"
 	"sort"
@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/popododo0720/vws-lib/obs"
 
 	"github.com/popododo0720/vws-network/internal/domain"
 )
@@ -70,7 +72,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if workers == 0 {
 		workers = 2
 	}
-	svc, err := start(ctx, repo, dp, cfg.AddressPool, workers)
+	svc, err := start(ctx, repo, measured{dp}, cfg.AddressPool, workers)
 	if err != nil {
 		if cerr := repo.close(); cerr != nil {
 			err = errors.Join(err, cerr)
@@ -87,6 +89,12 @@ func (s *Service) Close() error {
 		s.stop()
 	}
 	return s.repo.close()
+}
+
+// logError writes a worker failure through the process slog logger.
+func logError(format string, args ...any) {
+	slog.Default().LogAttrs(context.Background(), slog.LevelError, "network worker",
+		slog.String(obs.FieldErr, fmt.Sprintf(format, args...)))
 }
 
 // staleHeartbeat is how long a worker loop may go without a round before the
@@ -127,7 +135,7 @@ func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix
 		wake:        make(chan struct{}, 1),
 		maxAttempts: 10,
 		backoff:     defaultBackoff,
-		logf:        log.Printf,
+		logf:        logError,
 	}
 	if workers > 0 {
 		workerCtx, cancel := context.WithCancel(context.Background())
