@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/popododo0720/vws-network/internal/domain"
 )
@@ -44,5 +43,5 @@ func (k *kubeOVN) ensureNAD(ctx context.Context, s domain.SubnetID) error {
 }
 
 func (k *kubeOVN) removeNAD(ctx context.Context, s domain.SubnetID) error {
-	return client.IgnoreNotFound(k.c.Delete(ctx, k.nad(s)))
+	return k.removeObject(ctx, k.nad(s), string(s))
 }

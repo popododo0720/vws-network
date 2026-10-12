@@ -74,5 +74,5 @@ func (k *kubeOVN) deleteSNAT(ctx context.Context, s domain.Subnet) error {
 	if host, _, _ := unstructured.NestedString(gw.Object, "spec", "subnet"); host != string(s.ID) {
 		return nil
 	}
-	return client.IgnoreNotFound(k.c.Delete(ctx, gw))
+	return k.removeObject(ctx, gw, natGatewayName(s.VPC))
 }
