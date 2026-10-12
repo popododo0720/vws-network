@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	cloud.google.com/go/longrunning v1.3.0
-	github.com/popododo0720/vws-lib v0.1.0
+	github.com/popododo0720/vws-lib v0.1.1
 	github.com/popododo0720/vws-proto v0.0.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.72.0
 	go.opentelemetry.io/otel/metric v1.47.0
