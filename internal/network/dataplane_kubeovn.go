@@ -19,6 +19,8 @@ var (
 	gvkVpc    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Vpc"}
 	gvkSubnet = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Subnet"}
 	gvkGroup  = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "SecurityGroup"}
+	gvkEip    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "OvnEip"}
+	gvkFip    = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "OvnFip"}
 
 	anyIPv4 = netip.MustParsePrefix("0.0.0.0/0")
 )
@@ -26,8 +28,12 @@ var (
 // kubeOVN is the dataplane backed by Kube-OVN custom resources. Every object
 // is cluster scoped and named by its resource id. Create never overwrites:
 // CIDRs are immutable, so an existing object already is the desired state.
+//
+// externalSubnet names the Kube-OVN Subnet that holds the elastic IP pool.
+// It is the only place the pool is named; addresses come from the domain.
 type kubeOVN struct {
-	c client.Client
+	c              client.Client
+	externalSubnet string
 }
 
 func (k *kubeOVN) ensure(ctx context.Context, gvk schema.GroupVersionKind, id string, spec map[string]any) error {
@@ -70,16 +76,5 @@ func (k *kubeOVN) ensureSubnet(ctx context.Context, s domain.Subnet) error {
 func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
 	return k.remove(ctx, gvkSubnet, string(s.ID))
 }
-
-func (k *kubeOVN) ensureElasticIP(context.Context, domain.ElasticIP) error { return errNotImplemented }
-func (k *kubeOVN) deleteElasticIP(context.Context, domain.ElasticIP) error { return errNotImplemented }
-func (k *kubeOVN) ensureNAT(context.Context, domain.ElasticIP, netip.Addr) error {
-	return errNotImplemented
-}
-func (k *kubeOVN) deleteNAT(context.Context, domain.ElasticIP, netip.Addr) error {
-	return errNotImplemented
-}
-
-var errNotImplemented = &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn dataplane: not implemented"}
 
 var _ dataplane = (*kubeOVN)(nil)

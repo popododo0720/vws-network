@@ -16,7 +16,7 @@ import (
 
 func newKube() (*kubeOVN, client.Client) {
 	c := fake.NewClientBuilder().Build()
-	return &kubeOVN{c: c}, c
+	return &kubeOVN{c: c, externalSubnet: "external"}, c
 }
 
 func isInvalid(err error) bool {
