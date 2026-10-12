@@ -60,11 +60,11 @@ func TestKubeOVNSubnetSNAT(t *testing.T) {
 		}
 	}
 	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
-	spec, _, _ := unstructured.NestedMap(gw.Object, "spec")
+	spec := nestedMap(gw.Object, "spec")
 	if spec["vpc"] != "vpc-1" || spec["subnet"] != "subnet-a" || spec["lanIp"] != "10.0.1.254" {
 		t.Fatalf("gateway spec %v", spec)
 	}
-	if ext, _ := spec["externalSubnets"].([]any); len(ext) != 1 || ext[0] != "external" {
+	if ext, ok := spec["externalSubnets"].([]any); !ok || len(ext) != 1 || ext[0] != "external" {
 		t.Fatalf("gateway external subnets %v", spec["externalSubnets"])
 	}
 	if gw.GetAnnotations()[annotationID] != "nat-vpc-1" {
@@ -72,12 +72,12 @@ func TestKubeOVNSubnetSNAT(t *testing.T) {
 	}
 	for _, id := range []string{"subnet-a", "subnet-b"} {
 		rule := getObj(t, c, gvkSnat, "snat-"+id)
-		rs, _, _ := unstructured.NestedStringMap(rule.Object, "spec")
+		rs := nestedStringMap(rule.Object, "spec")
 		if rs["ovnEip"] != "snat-"+id || rs["vpcSubnet"] != id {
 			t.Fatalf("rule spec %v", rs)
 		}
 		eip := getObj(t, c, gvkEip, "snat-"+id)
-		es, _, _ := unstructured.NestedStringMap(eip.Object, "spec")
+		es := nestedStringMap(eip.Object, "spec")
 		if es["externalSubnet"] != "external" || es["type"] != "nat" || es["v4ip"] != "" {
 			t.Fatalf("eip spec %v", es)
 		}
@@ -134,10 +134,8 @@ func TestKubeOVNSubnetWithoutSNAT(t *testing.T) {
 
 func gatewayHost(t *testing.T, c client.Client) (string, string) {
 	t.Helper()
-	spec, _, _ := unstructured.NestedMap(getObj(t, c, gvkNatGW, "nat-vpc-1").Object, "spec")
-	host, _ := spec["subnet"].(string)
-	lan, _ := spec["lanIp"].(string)
-	return host, lan
+	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
+	return nestedString(gw.Object, "spec", "subnet"), nestedString(gw.Object, "spec", "lanIp")
 }
 
 func TestKubeOVNDeletingGatewayHostMovesGateway(t *testing.T) {

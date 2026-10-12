@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/netip"
 	"strconv"
 	"time"
@@ -31,25 +33,22 @@ func openSQLite(ctx context.Context, path string) (*sqliteRepo, error) {
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("openSQLite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	r := &sqliteRepo{db: db, mu: make(chan struct{}, 1)}
 	if err := r.lock(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, failClose(err, db)
 	}
 	defer r.unlock()
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, failClose(err, db)
 	}
 	if version == 0 {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 		if _, err := tx.ExecContext(ctx, `
 CREATE TABLE projects (
@@ -79,27 +78,20 @@ CREATE TABLE addresses (
   project TEXT NOT NULL
 );
 `); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(rollbackOn(err, tx), db)
 		}
 		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+strconv.Itoa(schemaVersion)); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(rollbackOn(err, tx), db)
 		}
 		if err := tx.Commit(); err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 	} else if version < schemaVersion {
 		if err := migrateSQLite(ctx, db, version); err != nil {
-			_ = db.Close()
-			return nil, err
+			return nil, failClose(err, db)
 		}
 	} else if version != schemaVersion {
-		_ = db.Close()
-		return nil, errors.New("network: unsupported sqlite schema version")
+		return nil, failClose(errors.New("network: unsupported sqlite schema version"), db)
 	}
 	return r, nil
 }
@@ -108,9 +100,9 @@ CREATE TABLE addresses (
 func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("migrateSQLite: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollback(tx)
 	for version < schemaVersion {
 		switch version {
 		case 1:
@@ -123,15 +115,18 @@ func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
 		version++
 	}
 	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+strconv.Itoa(schemaVersion)); err != nil {
-		return err
+		return fmt.Errorf("migrateSQLite: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrateSQLite: %w", err)
+	}
+	return nil
 }
 
 func rewriteProjectDocuments(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM projects`)
 	if err != nil {
-		return err
+		return fmt.Errorf("rewriteProjectDocuments: %w", err)
 	}
 	type row struct {
 		id    string
@@ -141,17 +136,15 @@ func rewriteProjectDocuments(ctx context.Context, tx *sql.Tx) error {
 	for rows.Next() {
 		var item row
 		if err := rows.Scan(&item.id, &item.state); err != nil {
-			_ = rows.Close()
-			return err
+			return failClose(err, rows)
 		}
 		saved = append(saved, item)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
+		return failClose(err, rows)
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return fmt.Errorf("rewriteProjectDocuments: %w", err)
 	}
 	for _, item := range saved {
 		st, err := domain.UnmarshalState(item.state)
@@ -163,7 +156,7 @@ func rewriteProjectDocuments(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE projects SET state = ? WHERE id = ?`, blob, item.id); err != nil {
-			return err
+			return fmt.Errorf("rewriteProjectDocuments: %w", err)
 		}
 	}
 	return nil
@@ -174,13 +167,51 @@ func (r *sqliteRepo) lock(ctx context.Context) error {
 	case r.mu <- struct{}{}:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("sqliteRepo.lock: %w", ctx.Err())
 	}
 }
 
 func (r *sqliteRepo) unlock() { <-r.mu }
 
-func (r *sqliteRepo) close() error { return r.db.Close() }
+// failClose returns err joined with the error from closing c, so a failed
+// close on an error path is reported instead of dropped.
+func failClose(err error, c io.Closer) error {
+	if cerr := c.Close(); cerr != nil {
+		return errors.Join(err, cerr)
+	}
+	return err
+}
+
+// rollbackOn rolls tx back after err and joins a rollback failure to err.
+func rollbackOn(err error, tx *sql.Tx) error {
+	if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
+		return errors.Join(err, rerr)
+	}
+	return err
+}
+
+// rollback is the deferred rollback of a transaction that may have committed.
+// sql.ErrTxDone is the normal result after Commit. Any other failure is logged
+// because the caller is already returning.
+func rollback(tx *sql.Tx) {
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		log.Printf("network: rollback: %v", err)
+	}
+}
+
+// closeLogged closes a read-only cursor whose error cannot change the result.
+func closeLogged(c io.Closer) {
+	if err := c.Close(); err != nil {
+		log.Printf("network: close: %v", err)
+	}
+}
+
+func (r *sqliteRepo) close() error {
+	if err := r.db.Close(); err != nil {
+		return fmt.Errorf("close sqlite: %w", err)
+	}
+	return nil
+}
 
 func (r *sqliteRepo) load(ctx context.Context, p domain.ProjectID) (domain.State, int64, error) {
 	if err := r.lock(ctx); err != nil {
@@ -194,7 +225,7 @@ func (r *sqliteRepo) load(ctx context.Context, p domain.ProjectID) (domain.State
 		return domain.State{}, 0, nil
 	}
 	if err != nil {
-		return domain.State{}, 0, err
+		return domain.State{}, 0, fmt.Errorf("load: %w", err)
 	}
 	st, err := domain.UnmarshalState(blob)
 	if err != nil {
@@ -210,22 +241,25 @@ func (r *sqliteRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, e
 	defer r.unlock()
 	rows, err := r.db.QueryContext(ctx, `SELECT addr FROM addresses`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("addressesInUse: %w", err)
 	}
-	defer rows.Close()
+	defer closeLogged(rows)
 	out := map[netip.Addr]bool{}
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("addressesInUse: %w", err)
 		}
 		addr, err := netip.ParseAddr(raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("addressesInUse: %w", err)
 		}
 		out[addr] = true
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("addressesInUse: %w", err)
+	}
+	return out, nil
 }
 
 func (r *sqliteRepo) key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error) {
@@ -270,9 +304,9 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("commit: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollback(tx)
 	if c.settle != nil {
 		terminal, err := settleAllowed(ctx, tx, *c.settle)
 		if err != nil {
@@ -297,7 +331,10 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 // settleAllowed reports whether the claim may write. A token mismatch is
@@ -310,7 +347,7 @@ func settleAllowed(ctx context.Context, tx *sql.Tx, j job) (bool, error) {
 		return false, errLostClaim
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("settleAllowed: %w", err)
 	}
 	done := domain.OpState(state) == domain.OpSucceeded || domain.OpState(state) == domain.OpFailed
 	return done, nil
@@ -322,7 +359,7 @@ func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		ver = 0
 	} else if err != nil {
-		return err
+		return fmt.Errorf("writeState: %w", err)
 	}
 	if ver != c.base {
 		return errStale
@@ -334,7 +371,7 @@ func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("writeState: %w", err)
 		}
 		if domain.ProjectID(owner) != c.project {
 			return errAddressTaken
@@ -348,14 +385,14 @@ func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 INSERT INTO projects (id, version, state) VALUES (?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET version = excluded.version, state = excluded.state`,
 		string(c.project), ver+1, blob); err != nil {
-		return err
+		return fmt.Errorf("writeState: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM addresses WHERE project = ?`, string(c.project)); err != nil {
-		return err
+		return fmt.Errorf("writeState: %w", err)
 	}
 	for addr := range addressesOf(*c.state) {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO addresses (addr, project) VALUES (?, ?)`, addr.String(), string(c.project)); err != nil {
-			return err
+			return fmt.Errorf("writeState: %w", err)
 		}
 	}
 	return nil
@@ -368,7 +405,7 @@ func insertJob(ctx context.Context, tx *sql.Tx, j job) error {
 		return errKeyTaken
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return fmt.Errorf("insertJob: %w", err)
 	}
 	kind, msg := 0, ""
 	if j.op.Err != nil {
@@ -380,7 +417,10 @@ INSERT INTO operations (id, project, type, resource, lane, state, err_kind, err_
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.op.ID, string(j.op.Project), string(j.op.Type), j.op.Resource, string(j.lane), int(j.op.State),
 		kind, msg, string(j.op.Key), j.fingerprint[:], j.attempts, nano(j.notBefore), j.token)
-	return err
+	if err != nil {
+		return fmt.Errorf("insertJob: %w", err)
+	}
+	return nil
 }
 
 func settleJob(ctx context.Context, tx *sql.Tx, j job) error {
@@ -391,7 +431,7 @@ func settleJob(ctx context.Context, tx *sql.Tx, j job) error {
 		return errLostClaim
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("settleJob: %w", err)
 	}
 	if domain.OpState(state) == domain.OpSucceeded || domain.OpState(state) == domain.OpFailed {
 		return nil
@@ -408,7 +448,10 @@ func settleJob(ctx context.Context, tx *sql.Tx, j job) error {
 	_, err = tx.ExecContext(ctx, `
 UPDATE operations SET state = ?, err_kind = ?, err_msg = ?, attempts = ?, not_before = ?, token = ?
 WHERE id = ?`, int(j.op.State), kind, msg, j.attempts, nano(j.notBefore), tokenOut, j.op.ID)
-	return err
+	if err != nil {
+		return fmt.Errorf("settleJob: %w", err)
+	}
+	return nil
 }
 
 func (r *sqliteRepo) claim(ctx context.Context, now time.Time, token string) (job, bool, error) {
@@ -427,11 +470,11 @@ func (r *sqliteRepo) claim(ctx context.Context, now time.Time, token string) (jo
 	res, err := r.db.ExecContext(ctx, `UPDATE operations SET state = ?, token = ? WHERE seq = ? AND state = ?`,
 		int(domain.OpRunning), token, j.seq, int(domain.OpPending))
 	if err != nil {
-		return job{}, false, err
+		return job{}, false, fmt.Errorf("claim: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return job{}, false, err
+		return job{}, false, fmt.Errorf("claim: %w", err)
 	}
 	if n != 1 {
 		return job{}, false, nil
@@ -444,9 +487,9 @@ func (r *sqliteRepo) claim(ctx context.Context, now time.Time, token string) (jo
 func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 	rows, err := r.db.QueryContext(ctx, opSelect+` WHERE state IN (?, ?)`, int(domain.OpPending), int(domain.OpRunning))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("nonTerminal: %w", err)
 	}
-	defer rows.Close()
+	defer closeLogged(rows)
 	var jobs []job
 	for rows.Next() {
 		j, err := scanJob(rows)
@@ -455,7 +498,10 @@ func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 		}
 		jobs = append(jobs, j)
 	}
-	return jobs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("nonTerminal: %w", err)
+	}
+	return jobs, nil
 }
 
 func (r *sqliteRepo) requeue(ctx context.Context) error {
@@ -465,7 +511,10 @@ func (r *sqliteRepo) requeue(ctx context.Context) error {
 	defer r.unlock()
 	_, err := r.db.ExecContext(ctx, `UPDATE operations SET state = ?, token = '' WHERE state = ?`,
 		int(domain.OpPending), int(domain.OpRunning))
-	return err
+	if err != nil {
+		return fmt.Errorf("requeue: %w", err)
+	}
+	return nil
 }
 
 type scanner interface {

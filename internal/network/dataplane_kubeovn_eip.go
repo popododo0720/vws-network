@@ -27,10 +27,10 @@ func (k *kubeOVN) deleteElasticIP(ctx context.Context, e domain.ElasticIP) error
 	fips := &unstructured.UnstructuredList{}
 	fips.SetGroupVersionKind(gvkFip.GroupVersion().WithKind("OvnFipList"))
 	if err := k.c.List(ctx, fips); err != nil {
-		return err
+		return fmt.Errorf("deleteElasticIP: %w", err)
 	}
 	for _, f := range fips.Items {
-		if ref, _, _ := unstructured.NestedString(f.Object, "spec", "ovnEip"); ref == string(e.ID) {
+		if nestedString(f.Object, "spec", "ovnEip") == string(e.ID) {
 			return fmt.Errorf("elastic ip %s is still bound by %s", e.ID, f.GetName())
 		}
 	}

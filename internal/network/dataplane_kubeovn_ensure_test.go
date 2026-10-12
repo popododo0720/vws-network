@@ -108,7 +108,7 @@ func TestEnsureKeepsExistingObjectUntouched(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 	o := getObj(t, c, gvkVpc, "vpc-1")
-	if m, _, _ := unstructured.NestedString(o.Object, "spec", "marker"); m != "theirs" || o.GetAnnotations()[annotationID] != "vpc-2" {
+	if m := nestedString(o.Object, "spec", "marker"); m != "theirs" || o.GetAnnotations()[annotationID] != "vpc-2" {
 		t.Fatalf("object was rewritten: %v", o.Object)
 	}
 }

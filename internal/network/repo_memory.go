@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -35,7 +36,7 @@ func (r *memRepo) lock(ctx context.Context) error {
 	case r.mu <- struct{}{}:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("memRepo.lock: %w", ctx.Err())
 	}
 }
 

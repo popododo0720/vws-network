@@ -52,7 +52,7 @@ func TestKubeOVNVPCAndSubnet(t *testing.T) {
 		t.Fatalf("vpc annotations %v", v.GetAnnotations())
 	}
 	s := getObj(t, c, gvkSubnet, "subnet-1")
-	spec, _, _ := unstructured.NestedStringMap(s.Object, "spec")
+	spec := nestedStringMap(s.Object, "spec")
 	want := map[string]string{"vpc": "vpc-1", "cidrBlock": "10.0.1.0/24", "protocol": "IPv4", "provider": "subnet-1.vws-system.ovn"}
 	for key, w := range want {
 		if spec[key] != w {

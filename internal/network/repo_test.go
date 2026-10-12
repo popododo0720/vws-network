@@ -41,7 +41,7 @@ func TestRepositoryContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = repo.close() })
+			t.Cleanup(func() { closeOrFail(t, repo.close) })
 			return repo
 		}},
 	}
@@ -100,7 +100,7 @@ func TestSettleTokenGuardsState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = repo.close() })
+			t.Cleanup(func() { closeOrFail(t, repo.close) })
 			return repo
 		}},
 	}
@@ -162,7 +162,7 @@ func TestSQLiteSchemaIsOneVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = repo.close() })
+	t.Cleanup(func() { closeOrFail(t, repo.close) })
 	var version, timeout int
 	var mode string
 	if err := repo.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
@@ -244,7 +244,7 @@ CREATE TABLE addresses (
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = repo.close() })
+	t.Cleanup(func() { closeOrFail(t, repo.close) })
 	var version int
 	if err := repo.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
@@ -334,7 +334,7 @@ CREATE TABLE addresses (
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer closeOrFail(t, db.Close)
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)

@@ -52,11 +52,11 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 		err = fmt.Errorf("kube-ovn needs -kubeconfig or an in-cluster service account: %w", err)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
 	c, err := client.New(rc, client.Options{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
 	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT}, nil
 }

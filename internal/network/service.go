@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/netip"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -67,7 +69,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	svc, err := start(ctx, repo, dp, cfg.AddressPool, workers)
 	if err != nil {
-		_ = repo.close()
+		if cerr := repo.close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
 		return nil, err
 	}
 	return svc, nil
@@ -82,6 +86,7 @@ func (s *Service) Close() error {
 	return s.repo.close()
 }
 
+//nolint:contextcheck // workers outlive the Open context and stop through Close
 func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix, workers int) (*Service, error) {
 	if err := validatePool(pool); err != nil {
 		return nil, err
@@ -1010,14 +1015,14 @@ func sameRules(got, want []domain.Rule, replaceEmpty bool) bool {
 func fingerprint(typ domain.OperationType, req any) ([32]byte, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	sum := sha256.New()
 	if _, err := sum.Write([]byte(typ)); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	if _, err := sum.Write(b); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, fmt.Errorf("fingerprint: %w", err)
 	}
 	var out [32]byte
 	copy(out[:], sum.Sum(nil))
@@ -1029,7 +1034,7 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		ok, err := s.step(ctx)
+		ok, err := s.stepRecovering(ctx)
 		if err != nil && s.logf != nil {
 			s.logf("network: step: %v", err)
 		}
@@ -1048,6 +1053,39 @@ func (s *Service) loop(ctx context.Context) {
 	}
 }
 
+// errPanic is the only thing a recovered panic leaves in an error. The value
+// and stack go to the log, so a stored operation error or a client never sees
+// them.
+var errPanic = errors.New("internal error")
+
+func (s *Service) recovered(where string, r any) error {
+	if s.logf != nil {
+		s.logf("network: panic in %s: %v\n%s", where, r, debug.Stack())
+	}
+	return errPanic
+}
+
+// stepRecovering keeps a worker alive when step panics.
+func (s *Service) stepRecovering(ctx context.Context) (ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok, err = false, s.recovered("step", r)
+		}
+	}()
+	return s.step(ctx)
+}
+
+// convergeRecovering turns a panic in the dataplane or the planner into an
+// error, so the operation counts an attempt and is retried or failed.
+func (s *Service) convergeRecovering(ctx context.Context, observed domain.State, typ domain.OperationType, id string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.recovered("converge "+string(typ), r)
+		}
+	}()
+	return s.converge(ctx, observed, typ, id)
+}
+
 func (s *Service) step(ctx context.Context) (bool, error) {
 	j, ok, err := s.repo.claim(ctx, s.now(), s.newID("tok-"))
 	if err != nil || !ok {
@@ -1056,6 +1094,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 	// A claim that neither settles nor schedules a retry must not stay running.
 	// The next claim in this process would otherwise see the lane as blocked.
 	settled := false
+	//nolint:contextcheck // ctx may be cancelled here and the claim must still be released
 	defer func() {
 		if settled {
 			return
@@ -1063,14 +1102,16 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		rel := j
 		rel.op.State = domain.OpPending
 		rel.op.Err = nil
-		_ = s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel})
+		if err := s.repo.commit(context.Background(), commit{project: j.op.Project, settle: &rel}); err != nil && s.logf != nil {
+			s.logf("network: release claim of %s: %v", j.op.ID, err)
+		}
 	}()
 	st, _, err := s.repo.load(ctx, j.op.Project)
 	if err != nil {
 		return false, err
 	}
 	observed := st.Clone()
-	if err := s.converge(ctx, observed, j.op.Type, j.op.Resource); err != nil {
+	if err := s.convergeRecovering(ctx, observed, j.op.Type, j.op.Resource); err != nil {
 		if err := s.failOrRetry(ctx, j, err); err != nil {
 			return false, err
 		}

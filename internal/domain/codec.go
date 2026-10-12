@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/netip"
 )
 
@@ -46,7 +47,11 @@ func MarshalState(s State) ([]byte, error) {
 		}
 		doc.EIPs = append(doc.EIPs, item)
 	}
-	return json.Marshal(doc)
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("MarshalState: %w", err)
+	}
+	return b, nil
 }
 
 // UnmarshalState decodes a document produced by MarshalState.

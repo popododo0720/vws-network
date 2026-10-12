@@ -23,7 +23,7 @@ func TestServiceAgainstStores(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = repo.close() })
+			t.Cleanup(func() { closeOrFail(t, repo.close) })
 			return repo
 		}},
 	}
@@ -631,7 +631,7 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.close()
+	defer closeOrFail(t, reopened.close)
 	fake := newFake()
 	again, err := newService(ctx, reopened, fake, mustP("198.51.100.0/24"))
 	if err != nil {
@@ -797,7 +797,7 @@ func TestLabelsSurviveReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.close()
+	defer closeOrFail(t, reopened.close)
 	again, err := newService(ctx, reopened, newFake(), mustP("198.51.100.0/24"))
 	if err != nil {
 		t.Fatal(err)

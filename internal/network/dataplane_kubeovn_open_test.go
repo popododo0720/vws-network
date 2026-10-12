@@ -86,7 +86,7 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 	if _, ok := svc.dp.(*fakeDataplane); !ok {
 		t.Fatalf("no kubeconfig gave %T", svc.dp)
 	}
-	_ = svc.Close()
+	closeOrFail(t, svc.Close)
 	svc, err = Open(ctx, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "b.db"),
 		AddressPool:  pool,
@@ -98,7 +98,7 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 	if _, ok := svc.dp.(*kubeOVN); !ok {
 		t.Fatalf("kubeconfig gave %T", svc.dp)
 	}
-	_ = svc.Close()
+	closeOrFail(t, svc.Close)
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !errors.Is(err, rest.ErrNotInCluster) {
 		t.Fatalf("external subnet without kubeconfig err %v, want ErrNotInCluster", err)
 	}
@@ -177,7 +177,11 @@ func TestNADNamespaceDefaultsWhenSelected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dp.(*kubeOVN).nadNamespace; got != "vws-system" {
-		t.Fatalf("nad namespace %q, want vws-system", got)
+	k, ok := dp.(*kubeOVN)
+	if !ok {
+		t.Fatalf("got %T, want *kubeOVN", dp)
+	}
+	if k.nadNamespace != "vws-system" {
+		t.Fatalf("nad namespace %q, want vws-system", k.nadNamespace)
 	}
 }

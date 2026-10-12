@@ -18,7 +18,6 @@ func exists(c client.Client, gvk schema.GroupVersionKind, ns, name string) bool 
 }
 
 func TestKubeOVNRemoveRequiresOwnerAnnotation(t *testing.T) {
-	ctx := context.Background()
 	cases := []struct {
 		name     string
 		id       string
@@ -37,7 +36,7 @@ func TestKubeOVNRemoveRequiresOwnerAnnotation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			k, c := newKube()
 			seed(t, c, gvkVpc, "", "vpc-1", tc.id, map[string]any{}, tc.mutate)
-			err := k.deleteVPC(ctx, domain.VPC{ID: "vpc-1"})
+			err := k.deleteVPC(t.Context(), domain.VPC{ID: "vpc-1"})
 			if tc.wantErr != isConflict(err) || (!tc.wantErr && err != nil) {
 				t.Fatalf("err = %v, want conflict %v", err, tc.wantErr)
 			}
@@ -81,7 +80,9 @@ func TestKubeOVNDeleteSNATKeepsForeignGateway(t *testing.T) {
 	sub := domain.Subnet{ID: "subnet-1", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
 	seed(t, c, gvkNatGW, "", natGatewayName(sub.VPC), "", map[string]any{}, nil)
 	gw := getObj(t, c, gvkNatGW, natGatewayName(sub.VPC))
-	_ = unstructured.SetNestedField(gw.Object, "subnet-1", "spec", "subnet")
+	if err := unstructured.SetNestedField(gw.Object, "subnet-1", "spec", "subnet"); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Update(ctx, gw); err != nil {
 		t.Fatal(err)
 	}

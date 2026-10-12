@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -61,28 +62,32 @@ func (k *kubeOVN) deleteRule(ctx context.Context, g domain.SecurityGroupID, r do
 // editRules replaces one rule list with a single Update, retried on conflict.
 // A missing group is an error for ensure and success for delete.
 func (k *kubeOVN) editRules(ctx context.Context, g domain.SecurityGroupID, mustExist bool, field string, edit func([]any) []any) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		o := &unstructured.Unstructured{}
 		o.SetGroupVersionKind(gvkGroup)
 		if err := k.c.Get(ctx, client.ObjectKey{Name: string(g)}, o); err != nil {
 			if !mustExist {
-				return client.IgnoreNotFound(err)
+				return ignoreNotFound("editRules", err)
 			}
-			return err
+			return fmt.Errorf("editRules: %w", err)
 		}
 		have, _, err := unstructured.NestedSlice(o.Object, "spec", field)
 		if err != nil {
-			return err
+			return fmt.Errorf("editRules: %w", err)
 		}
 		next := edit(have)
 		if len(next) == len(have) && reflect.DeepEqual(next, have) {
 			return nil
 		}
 		if err := unstructured.SetNestedSlice(o.Object, next, "spec", field); err != nil {
-			return err
+			return fmt.Errorf("editRules: %w", err)
 		}
 		return k.c.Update(ctx, o)
 	})
+	if err != nil {
+		return fmt.Errorf("editRules %s: %w", g, err)
+	}
+	return nil
 }
 
 func ruleField(d domain.Direction) string {
