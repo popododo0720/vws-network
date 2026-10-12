@@ -93,11 +93,29 @@ func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured
 	return nil
 }
 
+// remove deletes the object only when it carries the id annotation for id. A
+// missing object is success. An object without the annotation, or with another
+// id, was not created by this dataplane and is a Conflict that deletes nothing.
 func (k *kubeOVN) remove(ctx context.Context, gvk schema.GroupVersionKind, id string) error {
 	o := &unstructured.Unstructured{}
 	o.SetGroupVersionKind(gvk)
 	o.SetName(id)
-	return client.IgnoreNotFound(k.c.Delete(ctx, o))
+	return k.removeObject(ctx, o, id)
+}
+
+// removeObject reads o by its key and deletes it under a UID precondition, so
+// an object replaced after the read is not deleted.
+func (k *kubeOVN) removeObject(ctx context.Context, o *unstructured.Unstructured, id string) error {
+	key := client.ObjectKeyFromObject(o)
+	have := o.DeepCopy()
+	if err := k.c.Get(ctx, key, have); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if got := have.GetAnnotations()[annotationID]; got != id {
+		return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has id annotation %q, want %q: not deleting", o.GetKind(), key, got, id)}
+	}
+	uid := have.GetUID()
+	return client.IgnoreNotFound(k.c.Delete(ctx, have, client.Preconditions{UID: &uid}))
 }
 
 func (k *kubeOVN) ensureVPC(ctx context.Context, v domain.VPC) error {
