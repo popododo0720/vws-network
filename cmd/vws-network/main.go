@@ -60,7 +60,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpcapi.ServerOptions()...)
 	grpcapi.Register(srv, svc)
 	go func() {
 		<-ctx.Done()

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -1033,7 +1034,7 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		ok, err := s.step(ctx)
+		ok, err := s.stepRecovering(ctx)
 		if err != nil && s.logf != nil {
 			s.logf("network: step: %v", err)
 		}
@@ -1050,6 +1051,39 @@ func (s *Service) loop(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// errPanic is the only thing a recovered panic leaves in an error. The value
+// and stack go to the log, so a stored operation error or a client never sees
+// them.
+var errPanic = errors.New("internal error")
+
+func (s *Service) recovered(where string, r any) error {
+	if s.logf != nil {
+		s.logf("network: panic in %s: %v\n%s", where, r, debug.Stack())
+	}
+	return errPanic
+}
+
+// stepRecovering keeps a worker alive when step panics.
+func (s *Service) stepRecovering(ctx context.Context) (ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok, err = false, s.recovered("step", r)
+		}
+	}()
+	return s.step(ctx)
+}
+
+// convergeRecovering turns a panic in the dataplane or the planner into an
+// error, so the operation counts an attempt and is retried or failed.
+func (s *Service) convergeRecovering(ctx context.Context, observed domain.State, typ domain.OperationType, id string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.recovered("converge "+string(typ), r)
+		}
+	}()
+	return s.converge(ctx, observed, typ, id)
 }
 
 func (s *Service) step(ctx context.Context) (bool, error) {
@@ -1077,7 +1111,7 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	observed := st.Clone()
-	if err := s.converge(ctx, observed, j.op.Type, j.op.Resource); err != nil {
+	if err := s.convergeRecovering(ctx, observed, j.op.Type, j.op.Resource); err != nil {
 		if err := s.failOrRetry(ctx, j, err); err != nil {
 			return false, err
 		}
