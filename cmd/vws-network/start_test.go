@@ -25,3 +25,16 @@ func TestParseStartPoolRequired(t *testing.T) {
 		t.Fatalf("valid pool: %v %v", p, err)
 	}
 }
+
+func TestParseUnderlay(t *testing.T) {
+	u, err := parseUnderlay("ext", "ens3", 204, "10.30.0.0/24", "10.30.0.1")
+	if err != nil || u.CIDR.String() != "10.30.0.0/24" || u.Gateway.String() != "10.30.0.1" || u.VLANID != 204 {
+		t.Fatalf("%+v %v", u, err)
+	}
+	if _, err := parseUnderlay("ext", "ens3", 0, "bad", ""); err == nil || !strings.Contains(err.Error(), "-kube-underlay-cidr") {
+		t.Fatalf("bad cidr err %v", err)
+	}
+	if _, err := parseUnderlay("ext", "ens3", 0, "", "bad"); err == nil || !strings.Contains(err.Error(), "-kube-underlay-gateway") {
+		t.Fatalf("bad gateway err %v", err)
+	}
+}
