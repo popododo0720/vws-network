@@ -20,7 +20,7 @@ func TestEnvtestPoolMustSitInOperatorExternalSubnet(t *testing.T) {
 			DatabasePath: filepath.Join(t.TempDir(), "net.db"),
 			AddressPool:  mustP(pool),
 			Workers:      1,
-			KubeOVN:      KubeOVNConfig{Kubeconfig: kc, ExternalSubnet: "external", NADNamespace: envNamespace},
+			KubeOVN:      KubeOVNConfig{Kubeconfig: kc, ExternalSubnet: "operator-ext", NADNamespace: envNamespace},
 		})
 		if err == nil {
 			closeOrFail(t, svc.Close)
@@ -30,7 +30,7 @@ func TestEnvtestPoolMustSitInOperatorExternalSubnet(t *testing.T) {
 	if err := open("10.30.0.128/25"); !isInvalid(err) {
 		t.Fatalf("missing external subnet err %v, want Invalid", err)
 	}
-	seed(t, c, gvkSubnet, "", "external", "", map[string]any{"protocol": "IPv4", "cidrBlock": "10.30.0.0/24"}, nil)
+	seed(t, c, gvkSubnet, "", "operator-ext", "", map[string]any{"protocol": "IPv4", "cidrBlock": "10.30.0.0/24"}, nil)
 	if err := open("10.30.0.128/25"); err != nil {
 		t.Fatalf("pool inside: %v", err)
 	}

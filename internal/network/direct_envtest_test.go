@@ -25,7 +25,7 @@ func TestEnvtestOpenCreatesDirectNetworks(t *testing.T) {
 		AddressPool:  mustP("10.30.0.128/25"),
 		Workers:      1,
 		KubeOVN: KubeOVNConfig{
-			Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "external", NADNamespace: envNamespace,
+			Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "vws-external", NADNamespace: envNamespace,
 			Underlay: flatUnderlay(), Direct: []DirectNetwork{prodDirect()},
 		},
 	}
