@@ -67,10 +67,7 @@ func TestEnvtestSubnetAndSNATLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
-	if lan := nestedString(gw.Object, "spec", "lanIp"); lan != "10.0.1.254" {
-		t.Fatalf("lanIp %q", lan)
-	}
+	noNatGateways(t, c)
 	getObj(t, c, gvkSnat, "snat-subnet-1")
 	nad := &unstructured.Unstructured{}
 	nad.SetGroupVersionKind(gvkNAD)
@@ -90,7 +87,7 @@ func TestEnvtestSubnetAndSNATLifecycle(t *testing.T) {
 	}
 	for _, gvk := range []struct {
 		kind, name string
-	}{{"rule", "snat-subnet-1"}, {"eip", "snat-subnet-1"}, {"gw", "nat-vpc-1"}} {
+	}{{"rule", "snat-subnet-1"}, {"eip", "snat-subnet-1"}} {
 		absent(t, c, gvk.name, gvk.kind)
 	}
 	s := &unstructured.Unstructured{}
@@ -223,33 +220,6 @@ func waitFor(t *testing.T, ok func() bool) {
 			t.Fatal("condition not met in 20s")
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func TestEnvtestGatewayMovesWhenHostSubnetIsDeleted(t *testing.T) {
-	_, c := startEnv(t)
-	ctx := context.Background()
-	k := envKube(c, true)
-	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
-	b := domain.Subnet{ID: "subnet-b", VPC: "vpc-1", CIDR: mustP("10.0.2.0/24")}
-	for _, s := range []domain.Subnet{a, b} {
-		if err := k.ensureSubnet(ctx, s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := k.deleteSubnet(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	gw := getObj(t, c, gvkNatGW, "nat-vpc-1")
-	if host := nestedString(gw.Object, "spec", "subnet"); host != "subnet-b" {
-		t.Fatalf("gateway host %q, want subnet-b", host)
-	}
-	if err := k.deleteSubnet(ctx, b); err != nil {
-		t.Fatal(err)
-	}
-	err := c.Get(ctx, client.ObjectKey{Name: "nat-vpc-1"}, gw)
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("gateway after last subnet: %v", err)
 	}
 }
 

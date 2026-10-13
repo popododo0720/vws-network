@@ -4,7 +4,7 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 
 ## 언제 충돌이 나는가
 
-객체 이름은 리소스 id이고 id는 `vpc-`, `subnet-` 같은 접두사 뒤에 무작위 8바이트 16진수가 붙는다. 같은 이름의 객체를 사람이 미리 만들었을 때만 충돌한다. 대상은 Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule, VpcNatGateway, NetworkAttachmentDefinition이다.
+객체 이름은 리소스 id이고 id는 `vpc-`, `subnet-` 같은 접두사 뒤에 무작위 8바이트 16진수가 붙는다. 같은 이름의 객체를 사람이 미리 만들었을 때만 충돌한다. 대상은 Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule, NetworkAttachmentDefinition이다.
 
 `ensureObject`는 먼저 생성을 시도하고, 이미 있으면 그 객체를 읽어 아래 순서로 검사한다.
 
@@ -50,3 +50,7 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 - `FAILED` 리소스를 다시 수렴시키는 재시도 RPC는 없다.
 - 충돌한 객체를 우리 spec으로 덮어쓰지 않는다. 생성은 덮어쓰지 않고 기존 객체는 읽기만 한다.
 - id annotation이 없거나 다른 객체를 대신 지우거나 옮기는 기능은 없다. 사람이 `kubectl`로 정리해야 한다.
+
+## 이전 릴리스가 만든 VpcNatGateway
+
+`-kube-snat`은 이제 OVN 네이티브 SNAT(OvnEip + OvnSnatRule)만 쓴다. 이전 릴리스는 VPC마다 iptables `VpcNatGateway` `nat-<vpc id>`를 만들었고, 그 파드는 kube-system에 외부 Subnet 이름의 NAD가 없어 뜨지 못했다(vws-test 40, 41). 서비스는 그 객체를 지우지 않는다. 운영자가 id annotation(`vws.popododo0720.io/id: nat-<vpc id>`)을 확인하고 `kubectl delete vpc-nat-gateway nat-<vpc id>`로 지운다.
