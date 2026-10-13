@@ -437,6 +437,8 @@ func statusInfo(de *domain.Error, requestID string) (codes.Code, string) {
 		return codes.Unavailable, "RECONCILIATION_FAILED"
 	case domain.Busy:
 		return codes.Aborted, ""
+	case domain.Forbidden:
+		return codes.PermissionDenied, "PERMISSION_DENIED"
 	default:
 		return codes.Internal, "RECONCILIATION_FAILED"
 	}
