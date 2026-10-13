@@ -25,6 +25,9 @@ type KubeOVNConfig struct {
 	// Underlay, when set, makes the service create ExternalSubnet on a node
 	// NIC instead of expecting the operator to have made it.
 	Underlay UnderlayConfig
+	// Direct are the direct provider networks this service creates at start
+	// and exposes read-only to every project (vws-deploy#125).
+	Direct []DirectNetwork
 }
 
 const defaultNADNamespace = "vws-system"
@@ -33,7 +36,7 @@ const defaultNADNamespace = "vws-system"
 var inClusterConfig = rest.InClusterConfig
 
 func (c KubeOVNConfig) selected() bool {
-	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled()
+	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled() || len(c.Direct) > 0
 }
 
 // newDataplane is the one place a Config becomes a dataplane.
@@ -66,5 +69,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct}, nil
 }
