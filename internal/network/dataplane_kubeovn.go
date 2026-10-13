@@ -47,6 +47,8 @@ type kubeOVN struct {
 	nadNamespace string
 	// snat gives every subnet outbound SNAT through externalSubnet.
 	snat bool
+	// underlay, when enabled, is the external network this service creates.
+	underlay UnderlayConfig
 }
 
 // ensure creates the object, or accepts the existing one when it carries the

@@ -22,6 +22,9 @@ type KubeOVNConfig struct {
 	NADNamespace   string
 	// SNAT gives every subnet outbound SNAT through ExternalSubnet.
 	SNAT bool
+	// Underlay, when set, makes the service create ExternalSubnet on a node
+	// NIC instead of expecting the operator to have made it.
+	Underlay UnderlayConfig
 }
 
 const defaultNADNamespace = "vws-system"
@@ -30,7 +33,7 @@ const defaultNADNamespace = "vws-system"
 var inClusterConfig = rest.InClusterConfig
 
 func (c KubeOVNConfig) selected() bool {
-	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT
+	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled()
 }
 
 // newDataplane is the one place a Config becomes a dataplane.
@@ -43,6 +46,11 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	}
 	if cfg.ExternalSubnet == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn external subnet is required"}
+	}
+	if cfg.Underlay.enabled() {
+		if err := cfg.Underlay.validate(); err != nil {
+			return nil, err
+		}
 	}
 	var rc *rest.Config
 	var err error
@@ -58,5 +66,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay}, nil
 }
