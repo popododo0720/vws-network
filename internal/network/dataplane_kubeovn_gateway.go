@@ -102,3 +102,15 @@ func (s *Service) anyVPC(ctx context.Context) (bool, error) {
 	}
 	return false, nil
 }
+
+// gatewayUnkeptWarning is logged at start when gatewayLabelUnkept.
+const gatewayUnkeptWarning = "network: -kube-external-subnet is set but -kube-gateway-nodes is empty: " +
+	"the external gateway label is not kept, so a kube-ovn-controller restart breaks SNAT until the nodes are relabelled"
+
+// gatewayLabelUnkept reports a Kube-OVN dataplane with an external network but
+// no -kube-gateway-nodes: nothing restores the gateway label then, so the first
+// kube-ovn-controller restart breaks SNAT and EIPs until someone relabels the
+// nodes by hand.
+func gatewayLabelUnkept(k *kubeOVN) bool {
+	return k.externalSubnet != "" && len(k.gatewayNodes) == 0
+}
