@@ -33,7 +33,7 @@ type KubeOVNConfig struct {
 	// (vws-deploy#125). Required with Direct; it has no default.
 	DirectNADNamespace string
 	// GatewayNodes get ovn.kubernetes.io/external-gw=true, rechecked every
-	// GatewayRecheck (default 30s) while any VPC exists. No other node is touched.
+	// GatewayRecheck (default 5s) while any VPC exists. No other node is touched.
 	GatewayNodes   []string
 	GatewayRecheck time.Duration
 }

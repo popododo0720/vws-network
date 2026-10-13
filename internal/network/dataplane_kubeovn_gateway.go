@@ -18,8 +18,10 @@ import (
 // this service puts it back instead.
 const gatewayLabel = "ovn.kubernetes.io/external-gw"
 
-// defaultGatewayRecheck is how often the gateway labels are checked.
-const defaultGatewayRecheck = 30 * time.Second
+// defaultGatewayRecheck is how often the gateway labels are checked. A check
+// is one GET per listed node, so it is cheap; it bounds how long SNAT stays
+// broken after kube-ovn-controller restarts and resets the label.
+const defaultGatewayRecheck = 5 * time.Second
 
 // labelGatewayNodes sets gatewayLabel=true on every node named by
 // -kube-gateway-nodes whose label is anything else. It never touches another
