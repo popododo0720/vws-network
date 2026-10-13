@@ -1250,6 +1250,10 @@ func (s *Service) step(ctx context.Context) (bool, error) {
 func (s *Service) failOrRetry(ctx context.Context, j job, cause error) error {
 	j.attempts++
 	var de *domain.Error
+	if errors.Is(cause, errInterfaceNotReady) && j.attempts >= s.maxAttempts {
+		// Waiting for a VMI to come up or get its IP is not a failure.
+		j.attempts = s.maxAttempts - 1
+	}
 	if j.attempts >= s.maxAttempts || (errors.As(cause, &de) && (de.Kind == domain.Invalid || de.Kind == domain.Conflict)) {
 		return s.failJob(ctx, j, cause)
 	}
@@ -1303,11 +1307,31 @@ func (s *Service) converge(ctx context.Context, observed domain.State, typ domai
 		return s.deleteByKind(ctx, kind, id)
 	}
 	for _, action := range actions {
+		if action.Kind == domain.ActResolveNAT {
+			if err := s.resolveNAT(ctx, &observed, action.EIP); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := s.exec(ctx, action); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// resolveNAT finds the private address of the interface e is attached to,
+// records it on observed (settled into the store with the job), and ensures
+// its NAT. A dataplane that does not resolve interfaces leaves e alone.
+func (s *Service) resolveNAT(ctx context.Context, observed *domain.State, e domain.ElasticIP) error {
+	addr, err := s.dp.interfaceAddress(ctx, e.Instance, e.Device)
+	if err != nil || !addr.IsValid() {
+		return err
+	}
+	if err := observed.BindInterfaceAddress(e.ID, addr); err != nil {
+		return err
+	}
+	return s.dp.ensureNAT(ctx, e, addr)
 }
 
 func (s *Service) exec(ctx context.Context, a domain.Action) error {

@@ -54,6 +54,8 @@ type kubeOVN struct {
 	direct []DirectNetwork
 	// directNADNamespace is the VM namespace that holds the direct NADs.
 	directNADNamespace string
+	// vmNamespace is where vws-compute runs instances as VMIs.
+	vmNamespace string
 	// gatewayNodes are the only nodes this service labels as external gateways.
 	gatewayNodes []string
 }

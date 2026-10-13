@@ -1090,3 +1090,57 @@ func TestExhaustedDataplaneErrorHidesCause(t *testing.T) {
 		t.Fatalf("log %q", joined)
 	}
 }
+
+// TestAttachedAddressWaitsForTheInterface: an interface with no address yet
+// is retried past maxAttempts without failing the operation, and the NAT is
+// made once the address appears.
+func TestAttachedAddressWaitsForTheInterface(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	svc, err := newService(ctx, newMemRepo(), fake, mustP("198.51.100.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.backoff = func(int) time.Duration { return 0 }
+	vpcOp, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.9.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSubnet(ctx, call("proj", "sub"), domain.CreateSubnet{VPC: domain.VPCID(vpcOp.Resource), CIDR: mustP("10.9.0.0/24"), Zone: "z"}); err != nil {
+		t.Fatal(err)
+	}
+	eip, err := svc.AllocateElasticIP(ctx, call("proj", "eip"), domain.AllocateElasticIP{VPC: domain.VPCID(vpcOp.Resource)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	id := domain.ElasticIPID(eip.Resource)
+	fake.addrErr = errInterfaceNotReady
+	op, err := svc.UpdateElasticIP(ctx, call("proj", "assoc"), domain.UpdateElasticIP{ElasticIP: id, SetAssociation: true, Instance: "projects/proj/zones/z/instances/i-1", Device: "eth0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3*svc.maxAttempts; i++ {
+		if _, err := svc.step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := svc.GetOperation(ctx, "proj", op.ID); err != nil || got.State != domain.OpPending {
+		t.Fatalf("after %d not-ready attempts: %+v %v, want pending", 3*svc.maxAttempts, got, err)
+	}
+	fake.mu.Lock()
+	fake.addrErr = nil
+	fake.addrs = map[string]netip.Addr{"projects/proj/zones/z/instances/i-1/eth0": netip.MustParseAddr("10.9.0.7")}
+	fake.mu.Unlock()
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.has("nat/" + string(id) + "/10.9.0.7") {
+		t.Fatal("no NAT once the interface has an address")
+	}
+	if got, err := svc.GetOperation(ctx, "proj", op.ID); err != nil || got.State != domain.OpSucceeded {
+		t.Fatalf("operation %+v %v", got, err)
+	}
+}

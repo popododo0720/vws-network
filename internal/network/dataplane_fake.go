@@ -17,6 +17,8 @@ type fakeDataplane struct {
 	calls   []string
 	fails   int
 	failErr error
+	addrs   map[string]netip.Addr
+	addrErr error
 }
 
 func newFake() *fakeDataplane {
@@ -105,6 +107,17 @@ func (f *fakeDataplane) ensureNAT(_ context.Context, e domain.ElasticIP, private
 func (f *fakeDataplane) deleteNAT(_ context.Context, e domain.ElasticIP, private netip.Addr) error {
 	key := "nat/" + string(e.ID) + "/" + private.String()
 	return f.call("delete-"+key, func() { f.drop(key) })
+}
+
+// interfaceAddress answers addrErr when set, else from addrs, keyed instance+"/"+device. An unknown
+// interface is the zero address: the fake does not resolve it.
+func (f *fakeDataplane) interfaceAddress(_ context.Context, instance, device string) (netip.Addr, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.addrErr != nil {
+		return netip.Addr{}, f.addrErr
+	}
+	return f.addrs[instance+"/"+device], nil
 }
 
 var _ dataplane = (*fakeDataplane)(nil)

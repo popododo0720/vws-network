@@ -22,6 +22,10 @@ type dataplane interface {
 	deleteElasticIP(ctx context.Context, e domain.ElasticIP) error
 	ensureNAT(ctx context.Context, e domain.ElasticIP, private netip.Addr) error
 	deleteNAT(ctx context.Context, e domain.ElasticIP, private netip.Addr) error
+	// interfaceAddress is the private address of an instance interface. A
+	// zero address with no error means this dataplane does not resolve
+	// interfaces, and the attachment stays without NAT.
+	interfaceAddress(ctx context.Context, instance, device string) (netip.Addr, error)
 	// ready reads, never writes, to prove the dataplane can be reached.
 	ready(ctx context.Context) error
 }
