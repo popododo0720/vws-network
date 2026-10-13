@@ -291,7 +291,16 @@ func (h *handler) GetSubnet(ctx context.Context, req *networkv1.GetSubnetRequest
 	if sub.VPC != domain.VPCID(n.VPC) || (sub.Region != "" && sub.Region != n.Region) {
 		return nil, withInfo(codes.NotFound, "subnet not found", "RESOURCE_NOT_FOUND")
 	}
-	return toSubnet(n.Project, sub), nil
+	return toSubnet(n.Project, inRegion(sub, n.Region)), nil
+}
+
+// inRegion names a direct subnet in the region it was asked for: direct
+// networks belong to no region and appear in every one.
+func inRegion(sub domain.Subnet, region string) domain.Subnet {
+	if sub.VPC == network.DirectVPC && sub.Region == "" {
+		sub.Region = region
+	}
+	return sub
 }
 
 func (h *handler) ListSubnets(ctx context.Context, req *networkv1.ListSubnetsRequest) (*networkv1.ListSubnetsResponse, error) {
@@ -311,7 +320,7 @@ func (h *handler) ListSubnets(ctx context.Context, req *networkv1.ListSubnetsReq
 		if sub.Region != "" && sub.Region != parent.Region {
 			continue
 		}
-		msgs = append(msgs, toSubnet(parent.Project, sub))
+		msgs = append(msgs, toSubnet(parent.Project, inRegion(sub, parent.Region)))
 	}
 	page, next, err := cutPage(msgs, req.GetPageSize(), req.GetPageToken())
 	if err != nil {
