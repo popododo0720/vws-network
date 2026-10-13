@@ -719,8 +719,8 @@ func TestAttachedAddressPlansResolve(t *testing.T) {
 	if e := st.ElasticIPs["eip-1"]; e.Subnet != "subnet-1" {
 		t.Fatalf("subnet %q", e.Subnet)
 	}
-	acts, _, _ = st.PlanKind(KindAddress, "eip-1")
-	if len(acts) != 2 || acts[1].Kind != ActEnsureNAT || acts[1].Addr != netip.MustParseAddr("10.8.1.5") {
+	acts, _, err = st.PlanKind(KindAddress, "eip-1")
+	if err != nil || len(acts) != 2 || acts[1].Kind != ActEnsureNAT || acts[1].Addr != netip.MustParseAddr("10.8.1.5") {
 		t.Fatalf("plan after bind %v", acts)
 	}
 }
@@ -758,8 +758,8 @@ func TestSettleCarriesTheResolvedAddressOnlyForTheSameAttachment(t *testing.T) {
 	if e.Private.IsValid() || len(e.detaching) != 1 || e.detaching[0] != addr {
 		t.Fatalf("changed attachment: private %v detaching %v", e.Private, e.detaching)
 	}
-	acts, _, _ := cur.PlanKind(KindAddress, "eip-1")
-	if acts[len(acts)-1].Kind != ActDeleteNAT || acts[len(acts)-1].Addr != addr {
+	acts, _, err := cur.PlanKind(KindAddress, "eip-1")
+	if err != nil || acts[len(acts)-1].Kind != ActDeleteNAT || acts[len(acts)-1].Addr != addr {
 		t.Fatalf("plan after detach %v", acts)
 	}
 }
