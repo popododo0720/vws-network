@@ -46,6 +46,8 @@ type Service struct {
 	maxAttempts int
 	backoff     func(attempts int) time.Duration
 	logf        func(string, ...any)
+	// direct are the direct networks, read-only and shared by every project.
+	direct []domain.Subnet
 	// heartbeat is the unix nanosecond time a worker loop last went round.
 	heartbeat atomic.Int64
 }
@@ -63,12 +65,15 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePoolInUnderlay(cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
 		return nil, err
 	}
+	if err := validateDirect(cfg.KubeOVN.Direct, cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
+		return nil, err
+	}
 	dp, err := newDataplane(cfg.KubeOVN)
 	if err != nil {
 		return nil, err
 	}
 	if k, ok := dp.(*kubeOVN); ok {
-		if err := k.ensureUnderlay(ctx); err != nil {
+		if err := k.startChecks(ctx, cfg.AddressPool); err != nil {
 			return nil, err
 		}
 	}
@@ -87,6 +92,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 		return nil, err
 	}
+	svc.direct = directSubnets(cfg.KubeOVN.Direct)
 	return svc, nil
 }
 
@@ -206,6 +212,9 @@ func (s *Service) CreateVPC(ctx context.Context, c domain.Call, r domain.CreateV
 	if err := storedText(r.Text); err != nil {
 		return domain.Operation{}, err
 	}
+	if r.ID == DirectVPC {
+		return domain.Operation{}, directReadOnly()
+	}
 	id := string(r.ID)
 	if id == "" {
 		id = s.newID("vpc-")
@@ -284,6 +293,9 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 	if r.VPC == "" || r.Zone == "" || !r.CIDR.IsValid() {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
 	}
+	if isDirect(r.VPC, r.ID) {
+		return domain.Operation{}, directReadOnly()
+	}
 	if err := storedText(r.Text); err != nil {
 		return domain.Operation{}, err
 	}
@@ -307,6 +319,9 @@ func (s *Service) CreateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.CreateSubnet) (domain.Operation, error) {
 	if r.ID == "" || r.VPC == "" || (!r.Keep && (r.Zone == "" || !r.CIDR.IsValid())) {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet vpc, cidr, and zone are required"}
+	}
+	if isDirect(r.VPC, r.ID) {
+		return domain.Operation{}, directReadOnly()
 	}
 	if err := maskedText(r.Text); err != nil {
 		return domain.Operation{}, err
@@ -342,6 +357,9 @@ func (s *Service) UpdateSubnet(ctx context.Context, c domain.Call, r domain.Crea
 func (s *Service) DeleteSubnet(ctx context.Context, c domain.Call, r domain.DeleteSubnet) (domain.Operation, error) {
 	if r.Subnet == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "subnet id is required"}
+	}
+	if isDirect(r.VPC, r.Subnet) {
+		return domain.Operation{}, directReadOnly()
 	}
 	return s.mutate(ctx, c, domain.OpDeleteSubnet, string(r.Subnet), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
 		sub, ok := st.Subnets[r.Subnet]
@@ -516,6 +534,9 @@ func (s *Service) AllocateElasticIP(ctx context.Context, c domain.Call, r domain
 	if r.VPC == "" {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "vpc id is required"}
 	}
+	if r.VPC == DirectVPC {
+		return domain.Operation{}, directElasticIP()
+	}
 	if err := domain.CheckLabels(r.Labels); err != nil {
 		return domain.Operation{}, err
 	}
@@ -557,6 +578,9 @@ func (s *Service) AssociateElasticIP(ctx context.Context, c domain.Call, r domai
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "elastic ip and private address are required"}
 	}
 	return s.mutate(ctx, c, domain.OpAssociateElasticIP, string(r.ElasticIP), r, func(st *domain.State, _ func(netip.Addr) bool) (bool, error) {
+		if s.onDirectOnly(st, r) {
+			return false, directElasticIP()
+		}
 		return true, st.AssociateElasticIP(r)
 	})
 }
@@ -768,6 +792,11 @@ func (s *Service) GetSubnet(ctx context.Context, p domain.ProjectID, id domain.S
 	}
 	sub, ok := st.Subnets[id]
 	if !ok {
+		for _, d := range s.direct {
+			if d.ID == id {
+				return d, nil
+			}
+		}
 		return domain.Subnet{}, &domain.Error{Kind: domain.NotFound, Msg: "subnet not found"}
 	}
 	return sub, nil
@@ -819,11 +848,14 @@ func (s *Service) ListSubnets(ctx context.Context, p domain.ProjectID, vpc domai
 	if err != nil {
 		return nil, err
 	}
-	out := make([]domain.Subnet, 0, len(st.Subnets))
+	out := make([]domain.Subnet, 0, len(st.Subnets)+len(s.direct))
 	for _, sub := range st.Subnets {
 		if vpc == "" || sub.VPC == vpc {
 			out = append(out, sub)
 		}
+	}
+	if vpc == "" || vpc == DirectVPC {
+		out = append(out, s.direct...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil

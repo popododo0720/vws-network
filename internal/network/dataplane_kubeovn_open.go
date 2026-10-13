@@ -25,6 +25,12 @@ type KubeOVNConfig struct {
 	// Underlay, when set, makes the service create ExternalSubnet on a node
 	// NIC instead of expecting the operator to have made it.
 	Underlay UnderlayConfig
+	// Direct are the direct provider networks this service creates at start
+	// and exposes read-only to every project (vws-deploy#125).
+	Direct []DirectNetwork
+	// DirectNADNamespace is the VM namespace where the direct NADs live
+	// (vws-deploy#125). Required with Direct; it has no default.
+	DirectNADNamespace string
 }
 
 const defaultNADNamespace = "vws-system"
@@ -33,7 +39,7 @@ const defaultNADNamespace = "vws-system"
 var inClusterConfig = rest.InClusterConfig
 
 func (c KubeOVNConfig) selected() bool {
-	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled()
+	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled() || len(c.Direct) > 0
 }
 
 // newDataplane is the one place a Config becomes a dataplane.
@@ -46,6 +52,9 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	}
 	if cfg.ExternalSubnet == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn external subnet is required"}
+	}
+	if len(cfg.Direct) > 0 && cfg.DirectNADNamespace == "" {
+		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn direct networks need the VM namespace for their NADs (-kube-direct-nad-namespace)"}
 	}
 	if cfg.Underlay.enabled() {
 		if err := cfg.Underlay.validate(); err != nil {
@@ -66,5 +75,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace}, nil
 }

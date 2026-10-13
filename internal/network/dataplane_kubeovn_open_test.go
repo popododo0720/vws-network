@@ -87,18 +87,15 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 		t.Fatalf("no kubeconfig gave %T", svc.dp)
 	}
 	closeOrFail(t, svc.Close)
-	svc, err = Open(ctx, Config{
+	// A kubeconfig selects Kube-OVN, whose start reads the external Subnet
+	// (#52); with no API server behind it, Open fails instead of starting.
+	if _, err := Open(ctx, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "b.db"),
 		AddressPool:  pool,
 		KubeOVN:      KubeOVNConfig{Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext", NADNamespace: "vws-system"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	}); err == nil || isInvalid(err) || !strings.Contains(err.Error(), "get external subnet ext") || !strings.Contains(err.Error(), "does not start") {
+		t.Fatalf("unreachable kube-ovn err %v", err)
 	}
-	if _, ok := svc.dp.(measured).dataplane.(*kubeOVN); !ok {
-		t.Fatalf("kubeconfig gave %T", svc.dp)
-	}
-	closeOrFail(t, svc.Close)
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !errors.Is(err, rest.ErrNotInCluster) {
 		t.Fatalf("external subnet without kubeconfig err %v, want ErrNotInCluster", err)
 	}

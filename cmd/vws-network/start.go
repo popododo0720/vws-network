@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -9,7 +10,7 @@ import (
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
-const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]]]"
+const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] [-kube-direct-networks JSON -kube-direct-nad-namespace NS]]"
 
 // parseStart checks the required flags before anything opens. -pool has no
 // default: the site's elastic IP range must be given explicitly.
@@ -71,4 +72,23 @@ func parseUnderlay(provider, iface string, vlan int, cidr, gw, exclude string) (
 		}
 	}
 	return u, nil
+}
+
+// parseDirect reads -kube-direct-networks. Unknown fields are refused so a
+// misspelt key fails the start instead of dropping a setting; Open checks
+// the values.
+func parseDirect(line string) ([]network.DirectNetwork, error) {
+	if strings.TrimSpace(line) == "" {
+		return nil, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(line))
+	dec.DisallowUnknownFields()
+	var out []network.DirectNetwork
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("-kube-direct-networks: %w", err)
+	}
+	if dec.More() {
+		return nil, errors.New("-kube-direct-networks: trailing data after the json array")
+	}
+	return out, nil
 }

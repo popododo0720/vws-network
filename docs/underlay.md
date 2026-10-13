@@ -53,10 +53,58 @@ spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <provider>-v
 3. underlay NIC는 OVS 브리지로 넘어간다. 그 NIC에 호스트 망은 untagged 하나만 둘 수 있다(#125 규칙 4). 1장 NIC에 호스트 VLAN을 두면 underlay를 쓸 수 없다.
 4. Kube-OVN 기본 네트워크는 geneve 그대로이고 underlay는 외부 Subnet(과 나중의 direct Subnet)에만 쓴다.
 
-아직 없는 것(vws-network#52): `-kube-direct-networks`(direct Subnet/Vlan, 같은 NIC면 external과 ProviderNetwork 공유), underlay 없이 운영자가 만든 외부 Subnet의 cidrBlock 안에 풀이 있는지 시작 때 확인하는 일, direct Subnet 노출.
+## 운영자가 만든 외부 Subnet (underlay 플래그 없음, #52)
+
+underlay 플래그가 없으면 `Open`이 시작 때 `-kube-external-subnet`을 Get해서 `spec.cidrBlock` 안에 `-pool`이 있는지 본다. Subnet이 없거나 cidrBlock이 IPv4 prefix가 아니거나 풀이 밖이면 `domain.Invalid`로 시작을 거절한다. API 서버에 닿지 못하면 시작이 실패한다(전에는 시작한 뒤 ready만 실패했다). 이유와 오류 문구는 README "실행"에 있다.
+
+## direct 네트워크 (`-kube-direct-networks`, #52, vws-deploy#125)
+
+한 줄 JSON 배열이다. 배포 쪽이 VWSCluster `spec.network.nodes.direct`에서 그린다.
+
+```json
+[{"name":"prod","providerNetwork":"vws-pn0","interface":"ens3","vlan":200,"cidr":"192.168.200.0/24","gateway":"192.168.200.1","exclude":["192.168.200.2..192.168.200.20"]}]
+```
+
+모르는 키는 시작을 거절한다(종료 코드 2). `Open`이 검사하는 것:
+
+- `name`은 `^[a-z][a-z0-9-]{0,14}$`이고 겹치지 않는다.
+- `providerNetwork`, `interface`, `vlan`, `cidr`, `gateway`, `exclude`는 underlay 플래그와 같은 규칙을 탄다.
+- ProviderNetwork 하나는 NIC 하나다. 외부망과 같은 NIC면 같은 ProviderNetwork를 써야 하고(공유), 다른 이름이면 거절한다.
+- (NIC, VLAN) 쌍은 망 하나만 싣는다. 그래서 NIC 하나에 untagged 망은 하나뿐이고, 외부망과 direct는 VLAN이 달라야 한다(#125 규칙 4).
+- CIDR은 외부망, 다른 direct, `-pool`과 겹치지 않는다.
+
+시작 때 외부망 다음에 망마다 이 순서로 `ensure`한다. 다르면 `domain.Conflict`로 거절한다.
+
+```yaml
+kind: ProviderNetwork   # 외부망과 공유하면 같은 객체, spec 같음
+metadata: {name: <providerNetwork>}
+spec: {defaultInterface: <interface>}
+---
+kind: Vlan
+metadata: {name: <providerNetwork>-vlan<vlan>}
+spec: {id: <vlan>, provider: <providerNetwork>}
+---
+kind: Subnet
+metadata: {name: vws-direct-<name>}
+spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <providerNetwork>-vlan<vlan>, excludeIps: [<gateway>, <exclude>...], provider: vws-direct-<name>.<vm-ns>.ovn}
+---
+kind: NetworkAttachmentDefinition
+metadata: {name: vws-direct-<name>, namespace: <-kube-direct-nad-namespace>}
+spec: {config: '{"type":"kube-ovn","provider":"vws-direct-<name>.<vm-ns>.ovn",...}'}
+```
+
+NAD는 #125대로 VM 네임스페이스에 둔다. VM은 자기 네임스페이스의 NAD만 붙일 수 있기 때문이다. 그 네임스페이스는 `-kube-direct-nad-namespace`로 받고 기본값이 없다. `-kube-direct-networks`가 있는데 비어 있으면 `domain.Invalid`로 시작을 거절한다. #125가 이름을 정하지 않았으므로 배포 쪽이 정해서 넘긴다. 테넌트 subnet NAD는 그대로 `-kube-nad-namespace`다.
+
+API에서는 모든 프로젝트에 VPC `vpc-direct`의 Subnet `subnet-direct-<name>`(라벨 `vws:network-type=direct`)으로 보인다. Get과 List(vpc 비우거나 `vpc-direct`)에 나오고, 이름의 region은 요청한 region이다. 읽기 전용이다.
+
+- `vpc-direct`나 `subnet-direct-*`에 대한 CreateSubnet, UpdateSubnet, DeleteSubnet, CreateVPC는 `domain.Forbidden`(gRPC `PermissionDenied`, `UnauthorizedOperation`)이다. direct가 없어도 이 이름은 예약이다.
+- `vpc-direct`에 AllocateElasticIP, 그리고 EIP의 VPC 서브넷에는 없고 direct CIDR에 있는 사설 주소에 AssociateElasticIP는 `domain.Invalid`(`InvalidParameterCombination`)다.
+- 서비스는 direct 객체를 지우지 않는다. 플래그에서 뺀 망의 객체 정리는 운영자 몫이다.
+- 배포 RBAC: 외부망 underlay와 같은 `provider-networks`, `vlans`의 `get`, `create`, `subnets`의 `create`에 더해 VM 네임스페이스의 NAD `get`, `create` Role이 필요하다(`docs/rbac.md`). ready는 direct 객체를 읽지 않는다.
 
 ## 미검증
 
 - 실제 Kube-OVN에서 이 Subnet과 `extraExternalSubnets`가 OvnEip/OvnFip/OvnSnatRule의 외부 대역으로 동작하는지, `ovn-external-gw-config` 없이도 되는지.
 - Kube-OVN이 외부 Subnet에서 스스로 고르는 주소(VPC lrp 등)가 `-pool`과 겹치지 않는지.
 - 단일 NIC 노드에서 ProviderNetwork를 만들 때 노드 연결이 끊기지 않는지.
+- 같은 ProviderNetwork 위 다른 VLAN의 direct Subnet에 VM이 붙어 물리 게이트웨이에 닿는지, 외부망 EIP 트래픽과 섞이지 않는지.
