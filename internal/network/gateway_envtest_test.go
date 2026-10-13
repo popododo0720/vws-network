@@ -36,7 +36,7 @@ func TestEnvtestGatewayLabelComesBack(t *testing.T) {
 	}
 	svc, err := Open(ctx, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "net.db"),
-		AddressPool:  mustP("198.51.100.0/24"),
+		AddressPool:  mustP("10.78.0.128/25"),
 		Workers:      1,
 		KubeOVN: KubeOVNConfig{
 			Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "external", NADNamespace: envNamespace,
