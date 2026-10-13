@@ -72,3 +72,14 @@ func parseUnderlay(provider, iface string, vlan int, cidr, gw, exclude string) (
 	}
 	return u, nil
 }
+
+// splitList reads a comma-separated flag, dropping blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, e := range strings.Split(v, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}

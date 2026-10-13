@@ -37,6 +37,8 @@ func main() {
 	underlayCIDR := flag.String("kube-underlay-cidr", "", "CIDR of the external network; must contain -pool")
 	underlayGW := flag.String("kube-underlay-gateway", "", "gateway of the external network; inside -kube-underlay-cidr and outside -pool")
 	underlayExclude := flag.String("kube-underlay-exclude", "", "comma-separated addresses or a..b ranges of the external network Kube-OVN must not hand out; the gateway is always excluded")
+	gatewayNodes := flag.String("kube-gateway-nodes", "", "comma-separated nodes kept at ovn.kubernetes.io/external-gw=true while any VPC exists; no other node is touched")
+	gatewayRecheck := flag.Duration("kube-gateway-recheck", 30*time.Second, "how often -kube-gateway-nodes labels are checked and restored")
 	flag.Parse()
 	pool, err := parseStart(*dbPath, *poolFlag)
 	if err != nil {
@@ -57,6 +59,8 @@ func main() {
 		NADNamespace:   *nadNamespace,
 		SNAT:           *snat,
 		Underlay:       underlay,
+		GatewayNodes:   splitList(*gatewayNodes),
+		GatewayRecheck: *gatewayRecheck,
 	}); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelError, "vws-network stopped", slog.String(obs.FieldErr, err.Error()))
 		stop()
