@@ -46,6 +46,9 @@ type Service struct {
 	maxAttempts int
 	backoff     func(attempts int) time.Duration
 	logf        func(string, ...any)
+	// restored reports a normal gateway label restore. It is not a failure, so
+	// it never goes through logf (ERROR).
+	restored func(ctx context.Context, nodes []string)
 	// direct are the direct networks, read-only and shared by every project.
 	direct []domain.Subnet
 	// heartbeat is the unix nanosecond time a worker loop last went round.
@@ -138,6 +141,12 @@ func (s *Service) Close() error {
 }
 
 // logError writes a worker failure through the process slog logger.
+// logRestored logs a gateway label restore at INFO, with the nodes as a field.
+func logRestored(ctx context.Context, nodes []string) {
+	slog.Default().LogAttrs(ctx, slog.LevelInfo, "network: gateway label restored",
+		slog.String("label", gatewayLabel), slog.Any("nodes", nodes))
+}
+
 func logError(format string, args ...any) {
 	slog.Default().LogAttrs(context.Background(), slog.LevelError, "network worker",
 		slog.String(obs.FieldErr, fmt.Sprintf(format, args...)))
@@ -182,6 +191,7 @@ func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix
 		maxAttempts: 10,
 		backoff:     defaultBackoff,
 		logf:        logError,
+		restored:    logRestored,
 	}
 	if workers > 0 {
 		workerCtx, cancel := context.WithCancel(context.Background())

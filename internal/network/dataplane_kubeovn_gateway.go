@@ -77,8 +77,8 @@ func (s *Service) relabelGateways(ctx context.Context, k *kubeOVN) {
 		return
 	}
 	fixed, err := k.labelGatewayNodes(ctx)
-	if len(fixed) > 0 && s.logf != nil {
-		s.logf("network: restored %s=true on %v", gatewayLabel, fixed)
+	if len(fixed) > 0 && s.restored != nil {
+		s.restored(ctx, fixed)
 	}
 	if err != nil && s.logf != nil {
 		s.logf("network: gateway labels: %v", err)
