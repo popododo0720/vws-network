@@ -17,7 +17,7 @@ func (k *kubeOVN) ensureElasticIP(ctx context.Context, e domain.ElasticIP) error
 	}
 	return k.ensure(ctx, gvkEip, string(e.ID), map[string]any{
 		"externalSubnet": k.externalSubnet,
-		"v4ip":           e.Address.String(),
+		"v4Ip":           e.Address.String(),
 		"type":           "nat",
 	})
 }
