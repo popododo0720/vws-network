@@ -2,7 +2,9 @@ package network
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -96,5 +98,15 @@ func TestGatewayLabelUnkept(t *testing.T) {
 	}
 	if gatewayLabelUnkept(&kubeOVN{}) {
 		t.Fatal("warning without an external network")
+	}
+}
+
+func TestGatewayRecheckIsValidated(t *testing.T) {
+	for _, d := range []time.Duration{-time.Second, time.Millisecond, 999 * time.Millisecond} {
+		_, err := newDataplane(KubeOVNConfig{ExternalSubnet: "external", GatewayNodes: []string{"n1"}, GatewayRecheck: d})
+		var de *domain.Error
+		if !errors.As(err, &de) || de.Kind != domain.Invalid {
+			t.Fatalf("recheck %v: err %v, want Invalid", d, err)
+		}
 	}
 }

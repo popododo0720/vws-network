@@ -61,6 +61,9 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if len(cfg.Direct) > 0 && cfg.DirectNADNamespace == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn direct networks need the VM namespace for their NADs (-kube-direct-nad-namespace)"}
 	}
+	if cfg.GatewayRecheck < 0 || (cfg.GatewayRecheck > 0 && cfg.GatewayRecheck < minGatewayRecheck) {
+		return nil, &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("-kube-gateway-recheck %v must be 0 (the %v default) or at least %v", cfg.GatewayRecheck, defaultGatewayRecheck, minGatewayRecheck)}
+	}
 	if cfg.Underlay.enabled() {
 		if err := cfg.Underlay.validate(); err != nil {
 			return nil, err

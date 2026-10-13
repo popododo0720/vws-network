@@ -23,6 +23,10 @@ const gatewayLabel = "ovn.kubernetes.io/external-gw"
 // broken after kube-ovn-controller restarts and resets the label.
 const defaultGatewayRecheck = 5 * time.Second
 
+// minGatewayRecheck keeps a typo such as -kube-gateway-recheck=5ms from
+// hammering the API server with node GETs.
+const minGatewayRecheck = time.Second
+
 // labelGatewayNodes sets gatewayLabel=true on every node named by
 // -kube-gateway-nodes whose label is anything else. It never touches another
 // node and never removes a label. It returns the nodes it changed. A missing
