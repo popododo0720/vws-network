@@ -40,7 +40,7 @@ func main() {
 	directFlag := flag.String("kube-direct-networks", "", `direct networks as one JSON array line: [{"name","providerNetwork","interface","vlan","cidr","gateway","exclude"}]; each becomes Subnet and NAD vws-direct-<name> and the read-only API subnet subnet-direct-<name>`)
 	directNADNS := flag.String("kube-direct-nad-namespace", "", "VM namespace where the direct network NADs vws-direct-<name> are made (vws-deploy#125); required with -kube-direct-networks, no default")
 	gatewayNodes := flag.String("kube-gateway-nodes", "", "comma-separated nodes kept at ovn.kubernetes.io/external-gw=true while any VPC exists; no other node is touched")
-	gatewayRecheck := flag.Duration("kube-gateway-recheck", 5*time.Second, "how often -kube-gateway-nodes labels are checked and restored")
+	gatewayRecheck := flag.Duration("kube-gateway-recheck", 5*time.Second, "how often -kube-gateway-nodes labels are checked and restored; 0 means the default, otherwise at least 1s")
 	flag.Parse()
 	pool, err := parseStart(*dbPath, *poolFlag)
 	if err != nil {
