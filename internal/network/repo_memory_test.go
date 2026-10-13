@@ -217,3 +217,18 @@ func (r *memRepo) requeue(ctx context.Context) error {
 	}
 	return nil
 }
+
+func conflictingAddress(existing map[netip.Addr]domain.ProjectID, project domain.ProjectID, st domain.State) bool {
+	for addr := range addressesOf(st) {
+		owner, ok := existing[addr]
+		if ok && owner != project {
+			return true
+		}
+	}
+	return false
+}
+
+// newService is the test constructor. It requeues and starts no workers.
+func newService(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix) (*Service, error) {
+	return start(ctx, repo, dp, pool, 0)
+}
