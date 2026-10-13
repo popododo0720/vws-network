@@ -151,7 +151,10 @@ func (k *kubeOVN) ensureVPC(ctx context.Context, v domain.VPC) error {
 	if err := domain.CheckVPCCIDR(v.CIDR); err != nil {
 		return err
 	}
-	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{})
+	// extraExternalSubnets attaches the VPC to the external Subnet, which
+	// OvnEip, OvnFip and OvnSnatRule need. The gateway ConfigMap
+	// ovn-external-gw-config belongs to the deploy side (vws-deploy#127).
+	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{"extraExternalSubnets": []any{k.externalSubnet}})
 }
 
 func (k *kubeOVN) deleteVPC(ctx context.Context, v domain.VPC) error {

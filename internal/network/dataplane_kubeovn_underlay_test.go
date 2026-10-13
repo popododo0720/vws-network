@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/popododo0720/vws-network/internal/domain"
 )
 
 func flatUnderlay() UnderlayConfig {
@@ -147,4 +149,53 @@ func get(t *testing.T, c client.Client, gvk schema.GroupVersionKind, name string
 		t.Fatal(err)
 	}
 	return o
+}
+
+func TestUnderlayExclude(t *testing.T) {
+	u := flatUnderlay()
+	u.Exclude = []IPRange{{netip.MustParseAddr("10.30.0.1"), netip.MustParseAddr("10.30.0.1")}, {netip.MustParseAddr("10.30.0.2"), netip.MustParseAddr("10.30.0.9")}}
+	if err := u.validate(); err != nil {
+		t.Fatal(err)
+	}
+	got := u.excludeIPs()
+	if len(got) != 2 || got[0] != "10.30.0.1" || got[1] != "10.30.0.2..10.30.0.9" {
+		t.Fatalf("excludeIps %v", got)
+	}
+	if err := validatePoolInUnderlay(u, mustP("10.30.0.128/25")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePoolInUnderlay(u, mustP("10.30.0.8/29")); !isInvalid(err) || !strings.Contains(err.Error(), "exclude") {
+		t.Fatalf("pool over exclude err %v", err)
+	}
+	for _, r := range []string{"10.30.0.9..10.30.0.2", "10.31.0.5", "10.30.0.250..10.30.1.2"} {
+		bad := flatUnderlay()
+		x, err := ParseIPRange(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad.Exclude = []IPRange{x}
+		if err := bad.validate(); !isInvalid(err) {
+			t.Fatalf("exclude %s err %v, want Invalid", r, err)
+		}
+	}
+	k, c := newKube()
+	k.underlay = u
+	if err := k.ensureUnderlay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ex, _, err := unstructured.NestedStringSlice(get(t, c, gvkSubnet, "external").Object, "spec", "excludeIps")
+	if err != nil || len(ex) != 2 || ex[0] != "10.30.0.1" {
+		t.Fatalf("subnet excludeIps %v %v", ex, err)
+	}
+}
+
+func TestEnsureVPCAttachesExternalSubnet(t *testing.T) {
+	k, c := newKube()
+	if err := k.ensureVPC(context.Background(), domain.VPC{ID: "vpc-1", CIDR: mustP("10.0.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := unstructured.NestedStringSlice(get(t, c, gvkVpc, "vpc-1").Object, "spec", "extraExternalSubnets")
+	if err != nil || len(got) != 1 || got[0] != "external" {
+		t.Fatalf("extraExternalSubnets %v %v", got, err)
+	}
 }

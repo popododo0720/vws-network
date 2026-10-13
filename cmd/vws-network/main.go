@@ -36,6 +36,7 @@ func main() {
 	vlanID := flag.Int("kube-underlay-vlan", 0, "VLAN tag of the external network: 0 is flat, 1-4094 tagged")
 	underlayCIDR := flag.String("kube-underlay-cidr", "", "CIDR of the external network; must contain -pool")
 	underlayGW := flag.String("kube-underlay-gateway", "", "gateway of the external network; inside -kube-underlay-cidr and outside -pool")
+	underlayExclude := flag.String("kube-underlay-exclude", "", "comma-separated addresses or a..b ranges of the external network Kube-OVN must not hand out; the gateway is always excluded")
 	flag.Parse()
 	pool, err := parseStart(*dbPath, *poolFlag)
 	if err != nil {
@@ -43,7 +44,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
-	underlay, err := parseUnderlay(*providerNetwork, *underlayIface, *vlanID, *underlayCIDR, *underlayGW)
+	underlay, err := parseUnderlay(*providerNetwork, *underlayIface, *vlanID, *underlayCIDR, *underlayGW, *underlayExclude)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vws-network:", err)
 		os.Exit(2)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -24,6 +25,61 @@ type UnderlayConfig struct {
 	VLANID          int
 	CIDR            netip.Prefix
 	Gateway         netip.Addr
+	// Exclude are addresses on the physical network that Kube-OVN must never
+	// hand out (routers, nodes, other hosts). The gateway is always excluded.
+	Exclude []IPRange
+}
+
+// IPRange is an inclusive IPv4 range; From == To is one address. It renders
+// in the Kube-OVN excludeIps form: "a" or "a..b".
+type IPRange struct{ From, To netip.Addr }
+
+func (r IPRange) String() string {
+	if r.From == r.To {
+		return r.From.String()
+	}
+	return r.From.String() + ".." + r.To.String()
+}
+
+// ParseIPRange reads "a" or "a..b".
+func ParseIPRange(s string) (IPRange, error) {
+	from, to, ok := strings.Cut(s, "..")
+	if !ok {
+		to = from
+	}
+	a, err := netip.ParseAddr(from)
+	if err != nil {
+		return IPRange{}, fmt.Errorf("exclude %q: %w", s, err)
+	}
+	b, err := netip.ParseAddr(to)
+	if err != nil {
+		return IPRange{}, fmt.Errorf("exclude %q: %w", s, err)
+	}
+	return IPRange{From: a, To: b}, nil
+}
+
+func (r IPRange) overlaps(p netip.Prefix) bool {
+	last := lastAddr(p)
+	return !(r.To.Less(p.Addr()) || last.Less(r.From))
+}
+
+func lastAddr(p netip.Prefix) netip.Addr {
+	a := p.Addr().As4()
+	n := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
+	n |= ^uint32(0) >> p.Bits()
+	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
+}
+
+// excludeIPs is the Subnet excludeIps: the gateway first, then the operator's
+// ranges in the order given, without repeating the gateway.
+func (u UnderlayConfig) excludeIPs() []any {
+	out := []any{u.Gateway.String()}
+	for _, r := range u.Exclude {
+		if r.String() != u.Gateway.String() {
+			out = append(out, r.String())
+		}
+	}
+	return out
 }
 
 func (u UnderlayConfig) enabled() bool {
@@ -58,6 +114,11 @@ func (u UnderlayConfig) validate() error {
 	case !u.Gateway.IsValid() || !u.CIDR.Contains(u.Gateway):
 		return invalid("kube-ovn underlay gateway %v is not inside %v", u.Gateway, u.CIDR)
 	}
+	for _, r := range u.Exclude {
+		if !r.From.Is4() || !r.To.Is4() || r.To.Less(r.From) || !u.CIDR.Contains(r.From) || !u.CIDR.Contains(r.To) {
+			return invalid("kube-ovn underlay exclude %v must be an ascending ipv4 range inside %v", r, u.CIDR)
+		}
+	}
 	return nil
 }
 
@@ -75,6 +136,11 @@ func validatePoolInUnderlay(u UnderlayConfig, pool netip.Prefix) error {
 	}
 	if pool.Contains(u.Gateway) {
 		return invalid("elastic ip pool %v holds the underlay gateway %v", pool, u.Gateway)
+	}
+	for _, r := range u.Exclude {
+		if r.overlaps(pool) {
+			return invalid("elastic ip pool %v overlaps the underlay exclude %v", pool, r)
+		}
 	}
 	return nil
 }
@@ -94,10 +160,11 @@ func (u UnderlayConfig) underlayObjects(externalSubnet string) []underlayObject 
 		{gvkProviderNetwork, u.ProviderNetwork, map[string]any{"defaultInterface": u.Interface}},
 		{gvkVlan, u.vlanName(), map[string]any{"id": int64(u.VLANID), "provider": u.ProviderNetwork}},
 		{gvkSubnet, externalSubnet, map[string]any{
-			"protocol":  "IPv4",
-			"cidrBlock": u.CIDR.String(),
-			"gateway":   u.Gateway.String(),
-			"vlan":      u.vlanName(),
+			"protocol":   "IPv4",
+			"cidrBlock":  u.CIDR.String(),
+			"gateway":    u.Gateway.String(),
+			"vlan":       u.vlanName(),
+			"excludeIps": u.excludeIPs(),
 		}},
 	}
 }

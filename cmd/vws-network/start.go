@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
-const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP]]"
+const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]]]"
 
 // parseStart checks the required flags before anything opens. -pool has no
 // default: the site's elastic IP range must be given explicitly.
@@ -46,9 +47,19 @@ var documentationRanges = []netip.Prefix{
 
 // parseUnderlay turns the underlay flags into a config. network.Open checks
 // the values; this only parses the addresses.
-func parseUnderlay(provider, iface string, vlan int, cidr, gw string) (network.UnderlayConfig, error) {
+func parseUnderlay(provider, iface string, vlan int, cidr, gw, exclude string) (network.UnderlayConfig, error) {
 	u := network.UnderlayConfig{ProviderNetwork: provider, Interface: iface, VLANID: vlan}
 	var err error
+	for _, e := range strings.Split(exclude, ",") {
+		if e = strings.TrimSpace(e); e == "" {
+			continue
+		}
+		r, err := network.ParseIPRange(e)
+		if err != nil {
+			return u, fmt.Errorf("-kube-underlay-exclude: %w", err)
+		}
+		u.Exclude = append(u.Exclude, r)
+	}
 	if cidr != "" {
 		if u.CIDR, err = netip.ParsePrefix(cidr); err != nil {
 			return u, fmt.Errorf("-kube-underlay-cidr %q: %w", cidr, err)
