@@ -143,7 +143,8 @@ func directSubnets(direct []DirectNetwork) []domain.Subnet {
 // ensureDirect creates every direct network at start, after the external
 // underlay: its ProviderNetwork (the same object when it shares the NIC with
 // the external network), its Vlan, a Subnet whose provider ties it to a NAD of
-// the same name, and that NAD. As with the underlay, an object that differs
+// the same name, and that NAD in the VM namespace (vws-deploy#125), because a
+// VM can only attach a NAD in its own namespace. As with the underlay, an object that differs
 // is a Conflict and stops the start.
 func (k *kubeOVN) ensureDirect(ctx context.Context) error {
 	for _, d := range k.direct {
@@ -153,13 +154,13 @@ func (k *kubeOVN) ensureDirect(ctx context.Context) error {
 		}
 		name := directKubeName(d.Name)
 		objs := u.underlayObjects(name)
-		objs[2].spec["provider"] = k.nadProvider(domain.SubnetID(name))
+		objs[2].spec["provider"] = providerIn(k.directNADNamespace, domain.SubnetID(name))
 		for _, o := range objs {
 			if err := k.ensure(ctx, o.gvk, o.name, o.spec); err != nil {
 				return fmt.Errorf("ensure direct network %s %s %s: %w", d.Name, o.gvk.Kind, o.name, err)
 			}
 		}
-		if err := k.ensureNAD(ctx, domain.SubnetID(name)); err != nil {
+		if err := k.ensureNADIn(ctx, k.directNADNamespace, domain.SubnetID(name)); err != nil {
 			return fmt.Errorf("ensure direct network %s nad: %w", d.Name, err)
 		}
 	}

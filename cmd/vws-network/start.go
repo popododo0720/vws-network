@@ -10,7 +10,7 @@ import (
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
-const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] [-kube-direct-networks JSON]]"
+const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] [-kube-direct-networks JSON -kube-direct-nad-namespace NS]]"
 
 // parseStart checks the required flags before anything opens. -pool has no
 // default: the site's elastic IP range must be given explicitly.

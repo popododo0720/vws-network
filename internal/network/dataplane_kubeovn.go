@@ -52,6 +52,8 @@ type kubeOVN struct {
 	underlay UnderlayConfig
 	// direct are the direct provider networks this service creates.
 	direct []DirectNetwork
+	// directNADNamespace is the VM namespace that holds the direct NADs.
+	directNADNamespace string
 }
 
 // ensure creates the object, or accepts the existing one when it carries the

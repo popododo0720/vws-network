@@ -86,21 +86,21 @@ spec: {id: <vlan>, provider: <providerNetwork>}
 ---
 kind: Subnet
 metadata: {name: vws-direct-<name>}
-spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <providerNetwork>-vlan<vlan>, excludeIps: [<gateway>, <exclude>...], provider: vws-direct-<name>.<nad-ns>.ovn}
+spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <providerNetwork>-vlan<vlan>, excludeIps: [<gateway>, <exclude>...], provider: vws-direct-<name>.<vm-ns>.ovn}
 ---
 kind: NetworkAttachmentDefinition
-metadata: {name: vws-direct-<name>, namespace: <-kube-nad-namespace>}
-spec: {config: '{"type":"kube-ovn","provider":"vws-direct-<name>.<nad-ns>.ovn",...}'}
+metadata: {name: vws-direct-<name>, namespace: <-kube-direct-nad-namespace>}
+spec: {config: '{"type":"kube-ovn","provider":"vws-direct-<name>.<vm-ns>.ovn",...}'}
 ```
 
-NAD는 테넌트 subnet NAD와 같은 `-kube-nad-namespace`에 둔다. #125는 "VM namespace"라고 적었다. 다르면 배포 쪽과 맞춰야 한다.
+NAD는 #125대로 VM 네임스페이스에 둔다. VM은 자기 네임스페이스의 NAD만 붙일 수 있기 때문이다. 그 네임스페이스는 `-kube-direct-nad-namespace`로 받고 기본값이 없다. `-kube-direct-networks`가 있는데 비어 있으면 `domain.Invalid`로 시작을 거절한다. #125가 이름을 정하지 않았으므로 배포 쪽이 정해서 넘긴다. 테넌트 subnet NAD는 그대로 `-kube-nad-namespace`다.
 
 API에서는 모든 프로젝트에 VPC `vpc-direct`의 Subnet `subnet-direct-<name>`(라벨 `vws:network-type=direct`)으로 보인다. Get과 List(vpc 비우거나 `vpc-direct`)에 나오고, 이름의 region은 요청한 region이다. 읽기 전용이다.
 
 - `vpc-direct`나 `subnet-direct-*`에 대한 CreateSubnet, UpdateSubnet, DeleteSubnet, CreateVPC는 `domain.Forbidden`(gRPC `PermissionDenied`, `UnauthorizedOperation`)이다. direct가 없어도 이 이름은 예약이다.
 - `vpc-direct`에 AllocateElasticIP, 그리고 EIP의 VPC 서브넷에는 없고 direct CIDR에 있는 사설 주소에 AssociateElasticIP는 `domain.Invalid`(`InvalidParameterCombination`)다.
 - 서비스는 direct 객체를 지우지 않는다. 플래그에서 뺀 망의 객체 정리는 운영자 몫이다.
-- 배포 RBAC: 외부망 underlay와 같은 `provider-networks`, `vlans`의 `get`, `create`, `subnets`의 `create`, NAD `create`면 된다. 새 권한은 없다. ready는 direct 객체를 읽지 않는다.
+- 배포 RBAC: 외부망 underlay와 같은 `provider-networks`, `vlans`의 `get`, `create`, `subnets`의 `create`에 더해 VM 네임스페이스의 NAD `get`, `create` Role이 필요하다(`docs/rbac.md`). ready는 direct 객체를 읽지 않는다.
 
 ## 미검증
 

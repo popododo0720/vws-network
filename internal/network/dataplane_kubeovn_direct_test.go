@@ -147,3 +147,10 @@ func TestServiceDirectNetworksAreSharedAndReadOnly(t *testing.T) {
 		t.Fatalf("eip on a tenant eni: %v", err)
 	}
 }
+
+func TestDirectNeedsVMNamespace(t *testing.T) {
+	_, err := newDataplane(KubeOVNConfig{Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext", Direct: []DirectNetwork{prodDirect()}})
+	if !isInvalid(err) || !strings.Contains(err.Error(), "-kube-direct-nad-namespace") {
+		t.Fatalf("direct without vm namespace err %v", err)
+	}
+}

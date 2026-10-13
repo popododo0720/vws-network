@@ -17,6 +17,14 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 
 모든 delete는 먼저 get으로 id annotation과 UID를 읽는다(`removeObject`). 그래서 delete가 있는 resource에는 get이 반드시 있다.
 
+## direct NAD Role (`-kube-direct-nad-namespace`, VM 네임스페이스)
+
+| apiGroup | resource | verbs | 쓰는 곳 |
+| --- | --- | --- | --- |
+| k8s.cni.cncf.io | network-attachment-definitions | get, create | `ensureDirect`(시작 때 `vws-direct-<name>`, 지우지 않음) |
+
+`-kube-direct-networks`를 줄 때만 필요하다.
+
 ## NAD 네임스페이스 Role (`-kube-nad-namespace`)
 
 | apiGroup | resource | verbs | 쓰는 곳 |
