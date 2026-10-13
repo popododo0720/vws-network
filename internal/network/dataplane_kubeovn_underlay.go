@@ -60,7 +60,7 @@ func ParseIPRange(s string) (IPRange, error) {
 
 func (r IPRange) overlaps(p netip.Prefix) bool {
 	last := lastAddr(p)
-	return !(r.To.Less(p.Addr()) || last.Less(r.From))
+	return !r.To.Less(p.Addr()) && !last.Less(r.From)
 }
 
 func lastAddr(p netip.Prefix) netip.Addr {
