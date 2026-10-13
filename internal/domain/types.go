@@ -392,6 +392,9 @@ const (
 	ActDeleteEIP
 	ActEnsureNAT
 	ActDeleteNAT
+	// ActResolveNAT looks up the private address of the instance interface the
+	// address is attached to, then ensures its NAT like ActEnsureNAT.
+	ActResolveNAT
 )
 
 // Action is one idempotent dataplane call. Group rules travel as their own actions.

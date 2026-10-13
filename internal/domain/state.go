@@ -1,6 +1,9 @@
 package domain
 
-import "net/netip"
+import (
+	"net/netip"
+	"slices"
+)
 
 // State is one project's desired resources. The zero value is an empty project.
 // Methods either return an error and leave State unchanged, or preserve these
@@ -361,6 +364,49 @@ func (s *State) SetElasticIPAssociation(id ElasticIPID, instance, device string)
 	e.Instance, e.Device = instance, device
 	s.ElasticIPs[id] = e
 	return true, nil
+}
+
+// BindInterfaceAddress records addr, the address the dataplane found on the
+// instance interface the elastic IP is attached to, as its private address.
+// The worker calls it on its observed copy; SettleKind carries it into the
+// stored state only while the attachment is unchanged. An address outside
+// every subnet of the VPC is invalid; a subnet that is not usable yet is a
+// precondition, which the worker retries.
+func (s *State) BindInterfaceAddress(id ElasticIPID, addr netip.Addr) error {
+	s.init()
+	e, ok := s.ElasticIPs[id]
+	if !ok {
+		return notFound("elastic ip not found")
+	}
+	if e.Instance == "" {
+		return precondition("elastic ip is not attached to an instance")
+	}
+	if !addr.Is4() {
+		return invalid("instance interface address is not ipv4")
+	}
+	var subnet Subnet
+	n := 0
+	for _, sub := range s.Subnets {
+		if sub.VPC == e.VPC && sub.CIDR.Contains(addr) {
+			n++
+			subnet = sub
+		}
+	}
+	if n != 1 {
+		return invalid("instance interface address " + addr.String() + " is not in a subnet of the vpc")
+	}
+	if err := usable(subnet.Status); err != nil {
+		return err
+	}
+	for _, other := range s.ElasticIPs {
+		if other.ID != e.ID && other.VPC == e.VPC && other.Private == addr {
+			return conflict("private address is already associated")
+		}
+	}
+	e.Private = addr
+	e.Subnet = subnet.ID
+	s.ElasticIPs[e.ID] = e
+	return nil
 }
 
 // AssociateElasticIP binds eip to a usable host in exactly one subnet of its VPC.
@@ -817,6 +863,8 @@ func (s State) planEIP(e ElasticIP) ([]Action, bool, error) {
 	actions := []Action{{Kind: ActEnsureEIP, EIP: pub}}
 	if e.Private.IsValid() {
 		actions = append(actions, Action{Kind: ActEnsureNAT, EIP: pub, Addr: e.Private})
+	} else if e.Instance != "" {
+		actions = append(actions, Action{Kind: ActResolveNAT, EIP: pub})
 	}
 	for _, addr := range e.detaching {
 		actions = append(actions, Action{Kind: ActDeleteNAT, EIP: pub, Addr: addr})
@@ -882,6 +930,15 @@ func (s *State) settleEIP(observed ElasticIP) []netip.Addr {
 		return nil
 	}
 	cur.detaching = subtractAddrs(cur.detaching, observed.detaching)
+	if observed.Private.IsValid() && !cur.Private.IsValid() && observed.Instance != "" {
+		if cur.Instance == observed.Instance && cur.Device == observed.Device {
+			// The worker resolved the attached interface's address.
+			cur.Private, cur.Subnet = observed.Private, observed.Subnet
+		} else if !slices.Contains(cur.detaching, observed.Private) {
+			// The attachment changed while the NAT was made: a later job removes it.
+			cur.detaching = append(copyAddrs(cur.detaching), observed.Private)
+		}
+	}
 	if observed.Status == StatusPending && cur.Status == StatusPending {
 		cur.Status = StatusAvailable
 		s.ElasticIPs[cur.ID] = cur
