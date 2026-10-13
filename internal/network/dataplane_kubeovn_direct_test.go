@@ -96,7 +96,7 @@ func TestServiceDirectNetworksAreSharedAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	vpc := domain.VPCID(vpcOp.Resource)
-	if subs, _ := svc.ListSubnets(ctx, "proj", vpc); len(subs) != 0 {
+	if subs, err := svc.ListSubnets(ctx, "proj", vpc); err != nil || len(subs) != 0 {
 		t.Fatalf("a tenant vpc lists %+v", subs)
 	}
 	forbidden := map[string]func() error{
