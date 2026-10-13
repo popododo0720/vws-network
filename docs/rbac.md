@@ -14,8 +14,15 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 | kubeovn.io | ovn-snat-rules | get, create, delete | `ensureSNAT`, `deleteSNAT` |
 | kubeovn.io | vpc-nat-gateways | get, create, delete | `ensureGateway`, `rehomeGateway` |
 | kubeovn.io | provider-networks, vlans | get, create | `ensureUnderlay`(시작 때, 지우지 않음), `ready`(provider-networks get) |
+| "" (core) | nodes | get, patch | `(*kubeOVN).labelGatewayNodes`, `-kube-gateway-nodes`일 때만(아래) |
 
 모든 delete는 먼저 get으로 id annotation과 UID를 읽는다(`removeObject`). 그래서 delete가 있는 resource에는 get이 반드시 있다.
+
+## 게이트웨이 노드 라벨 (`-kube-gateway-nodes`)
+
+- `-kube-gateway-nodes`를 주면 VPC가 하나라도 있는 동안 `-kube-gateway-recheck`(기본 30s)마다 그 노드들을 get하고, `ovn.kubernetes.io/external-gw`가 `true`가 아니면 merge patch로 `true`를 붙인다. kube-ovn-controller가 재시작하면 이 라벨을 `false`로 바꿔 SNAT이 깨진다. `ovn-external-gw-config` ConfigMap으로 고정하면 underlay가 깨져서 이 방식을 쓴다.
+- 목록에 없는 노드는 읽지도 바꾸지도 않는다. 라벨을 지우지 않는다. list와 watch는 필요 없다.
+- nodes는 클러스터 범위라 ClusterRole이 필요하다. RBAC은 노드 이름으로 좁힐 수 있다(`resourceNames`). 차트는 vws-platform이 고친다.
 
 ## NAD 네임스페이스 Role (`-kube-nad-namespace`)
 
