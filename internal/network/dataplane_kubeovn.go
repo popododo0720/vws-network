@@ -201,5 +201,12 @@ func (k *kubeOVN) ready(ctx context.Context) error {
 	if err := k.c.Get(ctx, client.ObjectKey{Name: k.externalSubnet}, o); err != nil {
 		return fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
 	}
+	if k.underlay.enabled() {
+		pn := &unstructured.Unstructured{}
+		pn.SetGroupVersionKind(gvkProviderNetwork)
+		if err := k.c.Get(ctx, client.ObjectKey{Name: k.underlay.ProviderNetwork}, pn); err != nil {
+			return fmt.Errorf("get provider network %s: %w", k.underlay.ProviderNetwork, err)
+		}
+	}
 	return nil
 }

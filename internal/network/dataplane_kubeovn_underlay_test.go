@@ -1,9 +1,14 @@
 package network
 
 import (
+	"context"
 	"net/netip"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func flatUnderlay() UnderlayConfig {
@@ -75,4 +80,71 @@ func TestNewDataplaneUnderlaySelectsAndValidates(t *testing.T) {
 	if _, err := newDataplane(KubeOVNConfig{Underlay: flatUnderlay()}); !isInvalid(err) {
 		t.Fatalf("underlay without external subnet err %v", err)
 	}
+}
+
+func TestEnsureUnderlayFlatAndVLAN(t *testing.T) {
+	ctx := context.Background()
+	for _, vlan := range []int{0, 204} {
+		k, c := newKube()
+		k.underlay = flatUnderlay()
+		k.underlay.VLANID = vlan
+		for range 2 { // idempotent
+			if err := k.ensureUnderlay(ctx); err != nil {
+				t.Fatalf("vlan %d: %v", vlan, err)
+			}
+		}
+		pn := get(t, c, gvkProviderNetwork, "ext")
+		if nestedString(pn.Object, "spec", "defaultInterface") != "ens3" {
+			t.Fatalf("provider network %v", pn.Object)
+		}
+		vl := get(t, c, gvkVlan, k.underlay.vlanName())
+		id, found, err := unstructured.NestedInt64(vl.Object, "spec", "id")
+		if err != nil || !found || id != int64(vlan) || nestedString(vl.Object, "spec", "provider") != "ext" {
+			t.Fatalf("vlan %v", vl.Object)
+		}
+		sub := get(t, c, gvkSubnet, "external")
+		for f, w := range map[string]string{"cidrBlock": "10.30.0.0/24", "gateway": "10.30.0.1", "vlan": k.underlay.vlanName(), "protocol": "IPv4"} {
+			if got := nestedString(sub.Object, "spec", f); got != w {
+				t.Fatalf("subnet spec.%s = %q, want %q", f, got, w)
+			}
+		}
+		if err := k.ready(ctx); err != nil {
+			t.Fatalf("ready: %v", err)
+		}
+	}
+}
+
+func TestEnsureUnderlayRefusesForeignOrDifferent(t *testing.T) {
+	ctx := context.Background()
+	k, c := newKube()
+	k.underlay = flatUnderlay()
+	seed(t, c, gvkProviderNetwork, "", "ext", "", map[string]any{"defaultInterface": "ens3"}, nil)
+	if err := k.ensureUnderlay(ctx); !isConflict(err) {
+		t.Fatalf("unannotated provider network err %v, want Conflict", err)
+	}
+	k, c = newKube()
+	k.underlay = flatUnderlay()
+	seed(t, c, gvkSubnet, "", "external", "external", map[string]any{"protocol": "IPv4", "cidrBlock": "10.40.0.0/24", "gateway": "10.40.0.1", "vlan": "ext-vlan0"}, nil)
+	if err := k.ensureUnderlay(ctx); !isConflict(err) || !strings.Contains(err.Error(), "cidrBlock") {
+		t.Fatalf("different external subnet err %v, want Conflict on cidrBlock", err)
+	}
+}
+
+func TestReadyNeedsProviderNetwork(t *testing.T) {
+	k, c := newKube()
+	k.underlay = flatUnderlay()
+	seed(t, c, gvkSubnet, "", "external", "external", map[string]any{}, nil)
+	if err := k.ready(context.Background()); err == nil || !strings.Contains(err.Error(), "provider network ext") {
+		t.Fatalf("ready without provider network err %v", err)
+	}
+}
+
+func get(t *testing.T, c client.Client, gvk schema.GroupVersionKind, name string) *unstructured.Unstructured {
+	t.Helper()
+	o := &unstructured.Unstructured{}
+	o.SetGroupVersionKind(gvk)
+	if err := c.Get(context.Background(), client.ObjectKey{Name: name}, o); err != nil {
+		t.Fatal(err)
+	}
+	return o
 }

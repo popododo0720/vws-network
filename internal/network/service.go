@@ -67,6 +67,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if k, ok := dp.(*kubeOVN); ok {
+		if err := k.ensureUnderlay(ctx); err != nil {
+			return nil, err
+		}
+	}
 	repo, err := openSQLite(ctx, cfg.DatabasePath)
 	if err != nil {
 		return nil, err

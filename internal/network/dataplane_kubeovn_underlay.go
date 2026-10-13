@@ -1,8 +1,11 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/popododo0720/vws-network/internal/domain"
 )
@@ -72,6 +75,50 @@ func validatePoolInUnderlay(u UnderlayConfig, pool netip.Prefix) error {
 	}
 	if pool.Contains(u.Gateway) {
 		return invalid("elastic ip pool %v holds the underlay gateway %v", pool, u.Gateway)
+	}
+	return nil
+}
+
+var (
+	gvkProviderNetwork = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "ProviderNetwork"}
+	gvkVlan            = schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "Vlan"}
+)
+
+// underlayObjects is the external network in creation order: the
+// ProviderNetwork names the node NIC, the Vlan tags it (0 is flat) and the
+// Subnet carries the elastic IP CIDR on that Vlan. Each object is named by
+// itself and carries that name as its id, so ensure never adopts an object
+// someone else made with the same name.
+func (u UnderlayConfig) underlayObjects(externalSubnet string) []underlayObject {
+	return []underlayObject{
+		{gvkProviderNetwork, u.ProviderNetwork, map[string]any{"defaultInterface": u.Interface}},
+		{gvkVlan, u.vlanName(), map[string]any{"id": int64(u.VLANID), "provider": u.ProviderNetwork}},
+		{gvkSubnet, externalSubnet, map[string]any{
+			"protocol":  "IPv4",
+			"cidrBlock": u.CIDR.String(),
+			"gateway":   u.Gateway.String(),
+			"vlan":      u.vlanName(),
+		}},
+	}
+}
+
+type underlayObject struct {
+	gvk  schema.GroupVersionKind
+	name string
+	spec map[string]any
+}
+
+// ensureUnderlay creates the external network at start. An object that
+// exists with another id or spec is a Conflict and stops the start: the
+// service never rewires a live physical network.
+func (k *kubeOVN) ensureUnderlay(ctx context.Context) error {
+	if !k.underlay.enabled() {
+		return nil
+	}
+	for _, o := range k.underlay.underlayObjects(k.externalSubnet) {
+		if err := k.ensure(ctx, o.gvk, o.name, o.spec); err != nil {
+			return fmt.Errorf("ensure underlay %s %s: %w", o.gvk.Kind, o.name, err)
+		}
 	}
 	return nil
 }
