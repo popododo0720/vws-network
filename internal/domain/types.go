@@ -315,19 +315,6 @@ const (
 	OpUpdateElasticIP       OperationType = "UpdateElasticIp"
 )
 
-// OperationTypes is every stored mutation. VPC, subnet, and security group
-// names match their RPCs. Rule and elastic IP mutations stay inside the service.
-func OperationTypes() []OperationType {
-	return []OperationType{
-		OpCreateVPC, OpUpdateVPC, OpDeleteVPC,
-		OpCreateSubnet, OpUpdateSubnet, OpDeleteSubnet,
-		OpCreateSecurityGroup, OpUpdateSecurityGroup, OpDeleteSecurityGroup,
-		OpAuthorizeRules, OpRevokeRules,
-		OpAllocateElasticIP, OpReleaseElasticIP,
-		OpAssociateElasticIP, OpDisassociateElasticIP, OpUpdateElasticIP,
-	}
-}
-
 // ResourceKind is the map an operation's resource id belongs to.
 type ResourceKind int
 
