@@ -87,7 +87,35 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 		return nil, err
 	}
+	if k, ok := dp.(*kubeOVN); ok && len(k.gatewayNodes) > 0 {
+		period := cfg.KubeOVN.GatewayRecheck
+		if period <= 0 {
+			period = defaultGatewayRecheck
+		}
+		svc.startGatewayLoop(k, period)
+	}
 	return svc, nil
+}
+
+// startGatewayLoop runs gatewayLoop until Close, which stops it before the
+// workers and the store.
+//
+//nolint:contextcheck // the loop outlives the Open context and stops through Close
+func (s *Service) startGatewayLoop(k *kubeOVN, period time.Duration) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.gatewayLoop(ctx, k, period)
+	}()
+	prev := s.stop
+	s.stop = func() {
+		cancel()
+		<-done
+		if prev != nil {
+			prev()
+		}
+	}
 }
 
 // Close stops workers and closes the store. A later Open requeues any claim
