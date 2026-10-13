@@ -1,7 +1,11 @@
 package network
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -96,5 +100,41 @@ func TestGatewayLabelUnkept(t *testing.T) {
 	}
 	if gatewayLabelUnkept(&kubeOVN{}) {
 		t.Fatal("warning without an external network")
+	}
+}
+
+// TestGatewayRestoreLogsAtInfo is #72: a normal restore is INFO with the nodes
+// in a field, and nothing goes to the ERROR logger.
+func TestGatewayRestoreLogsAtInfo(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	c := fake.NewClientBuilder().WithObjects(node("n1", map[string]string{gatewayLabel: "false"})).Build()
+	k := &kubeOVN{c: c, gatewayNodes: []string{"n1"}}
+	svc, err := newService(ctx, newMemRepo(), newFake(), mustP("198.51.100.0/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errs []string
+	svc.logf = func(format string, args ...any) { errs = append(errs, fmt.Sprintf(format, args...)) }
+	if _, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")}); err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	svc.relabelGateways(ctx, k)
+	if len(errs) != 0 {
+		t.Fatalf("restore went to the error logger: %q", errs)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("log %q: %v", buf.String(), err)
+	}
+	if rec["level"] != "INFO" || rec["err"] != nil {
+		t.Fatalf("restore log %v, want INFO without err", rec)
+	}
+	if nodes, ok := rec["nodes"].([]any); !ok || len(nodes) != 1 || nodes[0] != "n1" {
+		t.Fatalf("nodes field %v", rec["nodes"])
 	}
 }
