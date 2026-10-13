@@ -9,6 +9,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -61,7 +62,13 @@ func userWith(t *testing.T, env *envtest.Environment, admin client.Client, name 
 func TestEnvtestDocumentedRBACIsEnough(t *testing.T) {
 	env, admin := startEnv(t)
 	ctx := context.Background()
-	seed(t, admin, gvkSubnet, "", "external", "", map[string]any{"cidrBlock": "10.78.0.0/24", "gateway": "10.78.0.1", "protocol": "IPv4"}, nil)
+	// The operator's external Subnet. startEnv may already make it.
+	ext := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"cidrBlock": "10.78.0.0/24", "gateway": "10.78.0.1", "protocol": "IPv4"}}}
+	ext.SetGroupVersionKind(gvkSubnet)
+	ext.SetName("external")
+	if err := admin.Create(ctx, ext); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatal(err)
+	}
 	k := envKube(userWith(t, env, admin, "vws-network", clusterRules), true)
 	vpc := domain.VPC{ID: "vpc-1", CIDR: mustP("10.0.0.0/16")}
 	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
