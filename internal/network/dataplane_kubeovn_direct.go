@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"regexp"
 	"sort"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -191,4 +192,39 @@ func (k *kubeOVN) validatePoolInExternalSubnet(ctx context.Context, pool netip.P
 		return invalid("elastic ip pool %v is not inside external subnet %s cidr %v", pool, k.externalSubnet, cidr)
 	}
 	return nil
+}
+
+// isDirect reports a request aimed at the direct VPC or a direct subnet id.
+// The names are reserved whether or not a direct network is configured.
+func isDirect(vpc domain.VPCID, sub domain.SubnetID) bool {
+	return vpc == DirectVPC || strings.HasPrefix(string(sub), "subnet-direct-")
+}
+
+func directReadOnly() error {
+	return &domain.Error{Kind: domain.Forbidden, Msg: "UnauthorizedOperation: direct networks are read-only"}
+}
+
+func directElasticIP() error {
+	return &domain.Error{Kind: domain.Invalid, Msg: "InvalidParameterCombination: an elastic ip cannot attach to a direct network interface"}
+}
+
+// onDirectOnly reports an association whose private address sits on a direct
+// network and on no subnet of the elastic IP's VPC: that address is a direct
+// ENI, which is already on the physical network and has no NAT to attach.
+func (s *Service) onDirectOnly(st *domain.State, r domain.AssociateElasticIP) bool {
+	e, ok := st.ElasticIPs[r.ElasticIP]
+	if !ok {
+		return false
+	}
+	for _, sub := range st.Subnets {
+		if sub.VPC == e.VPC && sub.CIDR.Contains(r.Private) {
+			return false
+		}
+	}
+	for _, d := range s.direct {
+		if d.CIDR.Contains(r.Private) {
+			return true
+		}
+	}
+	return false
 }

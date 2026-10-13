@@ -679,3 +679,13 @@ func TestFailedDataplaneOperationError(t *testing.T) {
 		t.Fatalf("error = %v", got)
 	}
 }
+
+func TestDirectSubnetNamedInTheAskedRegion(t *testing.T) {
+	sub := toSubnet("p", inRegion(domain.Subnet{ID: "subnet-direct-prod", VPC: network.DirectVPC, CIDR: netip.MustParsePrefix("192.168.200.0/24")}, "kr1"))
+	if sub.GetName() != "projects/p/regions/kr1/vpcs/vpc-direct/subnets/subnet-direct-prod" {
+		t.Fatalf("name %s", sub.GetName())
+	}
+	if got := inRegion(domain.Subnet{ID: "subnet-1", VPC: "vpc-1"}, "kr1"); got.Region != "" {
+		t.Fatalf("a tenant subnet moved to %q", got.Region)
+	}
+}
