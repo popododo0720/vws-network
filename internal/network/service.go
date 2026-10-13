@@ -74,6 +74,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		if err := k.ensureUnderlay(ctx); err != nil {
 			return nil, err
 		}
+		if err := k.ensureDirect(ctx); err != nil {
+			return nil, err
+		}
 	}
 	repo, err := openSQLite(ctx, cfg.DatabasePath)
 	if err != nil {
