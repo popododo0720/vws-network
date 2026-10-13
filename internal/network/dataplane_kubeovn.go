@@ -50,6 +50,8 @@ type kubeOVN struct {
 	snat bool
 	// underlay, when enabled, is the external network this service creates.
 	underlay UnderlayConfig
+	// gatewayNodes are the only nodes this service labels as external gateways.
+	gatewayNodes []string
 }
 
 // ensure creates the object, or accepts the existing one when it carries the
