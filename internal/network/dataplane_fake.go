@@ -9,8 +9,8 @@ import (
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
-// fakeDataplane records the objects a dataplane would hold. It is the only
-// dataplane implementation in this repo.
+// fakeDataplane records the objects a dataplane would hold. It runs when no
+// Kube-OVN option is set; tests also drive it through dataplane_fake_test.go.
 type fakeDataplane struct {
 	mu      sync.Mutex
 	objects map[string]struct{}
@@ -21,29 +21,6 @@ type fakeDataplane struct {
 
 func newFake() *fakeDataplane {
 	return &fakeDataplane{objects: map[string]struct{}{}}
-}
-
-// failNext makes the next n calls return err and leave the record unchanged.
-func (f *fakeDataplane) failNext(n int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.fails = n
-	f.failErr = err
-}
-
-func (f *fakeDataplane) has(object string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, ok := f.objects[object]
-	return ok
-}
-
-func (f *fakeDataplane) log() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]string, len(f.calls))
-	copy(out, f.calls)
-	return out
 }
 
 func (f *fakeDataplane) call(name string, mutate func()) error {

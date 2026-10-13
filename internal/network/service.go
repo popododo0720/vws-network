@@ -212,11 +212,6 @@ func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix
 	return s, nil
 }
 
-// newService is the test constructor. It requeues and starts no workers.
-func newService(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix) (*Service, error) {
-	return start(ctx, repo, dp, pool, 0)
-}
-
 func validatePool(p netip.Prefix) error {
 	if !p.IsValid() || !p.Addr().Is4() || p != p.Masked() || p.Bits() < 16 || p.Bits() > 30 {
 		return &domain.Error{Kind: domain.Invalid, Msg: "address pool must be a canonical ipv4 prefix from /16 through /30"}

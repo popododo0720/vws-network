@@ -93,16 +93,6 @@ func addressesOf(st domain.State) map[netip.Addr]bool {
 	return out
 }
 
-func conflictingAddress(existing map[netip.Addr]domain.ProjectID, project domain.ProjectID, st domain.State) bool {
-	for addr := range addressesOf(st) {
-		owner, ok := existing[addr]
-		if ok && owner != project {
-			return true
-		}
-	}
-	return false
-}
-
 func nano(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
