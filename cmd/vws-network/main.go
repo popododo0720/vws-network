@@ -30,7 +30,7 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane and takes precedence over the in-cluster config")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required for Kube-OVN, and without -kubeconfig it selects the in-cluster service account")
 	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions; defaults to vws-system when Kube-OVN is selected")
-	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT through -kube-external-subnet")
+	snat := flag.Bool("kube-snat", false, "give every subnet outbound OVN-native SNAT (OvnEip and OvnSnatRule, no VpcNatGateway) through -kube-external-subnet")
 	providerNetwork := flag.String("kube-provider-network", "", "Kube-OVN ProviderNetwork to create for the external network (at most 12 characters); selects the underlay")
 	underlayIface := flag.String("kube-underlay-interface", "", "node NIC the provider network binds, for example ens3; required with -kube-provider-network")
 	vlanID := flag.Int("kube-underlay-vlan", 0, "VLAN tag of the external network: 0 is flat, 1-4094 tagged")

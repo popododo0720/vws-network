@@ -4,7 +4,7 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 
 ## 언제 충돌이 나는가
 
-객체 이름은 리소스 id이고 id는 `vpc-`, `subnet-` 같은 접두사 뒤에 무작위 8바이트 16진수가 붙는다. 같은 이름의 객체를 사람이 미리 만들었을 때만 충돌한다. 대상은 Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule, VpcNatGateway, NetworkAttachmentDefinition이다.
+객체 이름은 리소스 id이고 id는 `vpc-`, `subnet-` 같은 접두사 뒤에 무작위 8바이트 16진수가 붙는다. 같은 이름의 객체를 사람이 미리 만들었을 때만 충돌한다. 대상은 Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule, NetworkAttachmentDefinition이다.
 
 `ensureObject`는 먼저 생성을 시도하고, 이미 있으면 그 객체를 읽어 아래 순서로 검사한다.
 
@@ -54,3 +54,7 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 ## v4ip로 만든 OvnEip (vws-test 38, 38b)
 
 이 수정 전 vws-network는 OvnEip에 `spec.v4ip`(소문자)를 썼다. Kube-OVN v1.16.12 CRD 필드는 `v4Ip`라서 API 서버가 그 필드를 버렸고, Kube-OVN이 외부 Subnet에서 다른 주소를 골랐다(API는 10.78.0.225, 실제 OvnEip는 10.78.0.201). 수정 뒤 같은 OvnEip를 다시 ensure하면 `spec.v4Ip`가 달라 `domain.Conflict`가 난다. 덮어쓰지 않는다. 그 주소에 OvnFip가 없으면 OvnEip를 지우고 연산을 다시 돌린다. OvnFip가 있으면 먼저 OvnFip를 지운다.
+
+## 이전 릴리스가 만든 VpcNatGateway
+
+`-kube-snat`은 이제 OVN 네이티브 SNAT(OvnEip + OvnSnatRule)만 쓴다. 이전 릴리스는 VPC마다 iptables `VpcNatGateway` `nat-<vpc id>`를 만들었고, 그 파드는 kube-system에 외부 Subnet 이름의 NAD가 없어 뜨지 못했다(vws-test 40, 41). 서비스는 그 객체를 지우지 않는다. 운영자가 id annotation(`vws.popododo0720.io/id: nat-<vpc id>`)을 확인하고 `kubectl delete vpc-nat-gateway nat-<vpc id>`로 지운다.
