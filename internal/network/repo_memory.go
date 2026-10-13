@@ -76,6 +76,18 @@ func (r *memRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, erro
 	return out, nil
 }
 
+func (r *memRepo) projectIDs(ctx context.Context) ([]domain.ProjectID, error) {
+	if err := r.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer r.unlock()
+	out := make([]domain.ProjectID, 0, len(r.projects))
+	for p := range r.projects {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 func (r *memRepo) key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error) {
 	if err := r.lock(ctx); err != nil {
 		return job{}, false, err

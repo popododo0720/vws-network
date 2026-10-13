@@ -21,6 +21,8 @@ var (
 type repository interface {
 	load(ctx context.Context, p domain.ProjectID) (domain.State, int64, error)
 	addressesInUse(ctx context.Context) (map[netip.Addr]bool, error)
+	// projectIDs lists every project that has stored state.
+	projectIDs(ctx context.Context) ([]domain.ProjectID, error)
 	key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error)
 	operation(ctx context.Context, p domain.ProjectID, id string) (domain.Operation, error)
 	commit(ctx context.Context, c commit) error
