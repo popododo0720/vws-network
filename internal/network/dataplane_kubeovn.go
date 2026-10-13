@@ -50,6 +50,8 @@ type kubeOVN struct {
 	snat bool
 	// underlay, when enabled, is the external network this service creates.
 	underlay UnderlayConfig
+	// direct are the direct provider networks this service creates.
+	direct []DirectNetwork
 }
 
 // ensure creates the object, or accepts the existing one when it carries the

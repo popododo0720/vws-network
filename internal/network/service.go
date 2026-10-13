@@ -63,6 +63,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePoolInUnderlay(cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
 		return nil, err
 	}
+	if err := validateDirect(cfg.KubeOVN.Direct, cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
+		return nil, err
+	}
 	dp, err := newDataplane(cfg.KubeOVN)
 	if err != nil {
 		return nil, err
