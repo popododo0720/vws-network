@@ -40,7 +40,7 @@ func TestEnvtestGatewayLabelComesBack(t *testing.T) {
 		Workers:      1,
 		KubeOVN: KubeOVNConfig{
 			Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "external", NADNamespace: envNamespace,
-			GatewayNodes: []string{"gw1", "gw2"}, GatewayRecheck: 100 * time.Millisecond,
+			GatewayNodes: []string{"gw1", "gw2"}, GatewayRecheck: minGatewayRecheck,
 		},
 	})
 	if err != nil {
