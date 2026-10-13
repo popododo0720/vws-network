@@ -5,7 +5,7 @@ VWS 네트워크 제어 서비스다. 프로젝트 단위로 VPC, 서브넷, 보
 ## 실행
 
 ```sh
-go run ./cmd/vws-network -db /tmp/vws-network.db -pool 198.51.100.0/24
+go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 ```
 
 `-listen`의 기본값은 `127.0.0.1:8080`이다.

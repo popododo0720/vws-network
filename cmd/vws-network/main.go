@@ -26,19 +26,16 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "grpc listen address")
 	dbPath := flag.String("db", "", "sqlite database path")
-	poolFlag := flag.String("pool", "", "elastic ip pool cidr")
+	poolFlag := flag.String("pool", "", "elastic ip pool cidr; required, no default, and never an RFC 5737 documentation range")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane and takes precedence over the in-cluster config")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required for Kube-OVN, and without -kubeconfig it selects the in-cluster service account")
 	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions; defaults to vws-system when Kube-OVN is selected")
 	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT through -kube-external-subnet")
 	flag.Parse()
-	if *dbPath == "" || *poolFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat]]")
-		os.Exit(2)
-	}
-	pool, err := netip.ParsePrefix(*poolFlag)
+	pool, err := parseStart(*dbPath, *poolFlag)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "-pool:", err)
+		fmt.Fprintln(os.Stderr, "vws-network:", err)
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
