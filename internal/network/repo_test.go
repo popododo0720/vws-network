@@ -350,3 +350,33 @@ CREATE TABLE addresses (
 		t.Fatalf("document %s", blob)
 	}
 }
+
+func TestRepoProjectIDs(t *testing.T) {
+	ctx := context.Background()
+	for name, open := range map[string]func(t *testing.T) repository{
+		"memory": func(*testing.T) repository { return newMemRepo() },
+		"sqlite": func(t *testing.T) repository {
+			r, err := openSQLite(ctx, filepath.Join(t.TempDir(), "p.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { closeOrFail(t, r.close) })
+			return r
+		},
+	} {
+		r := open(t)
+		svc, err := newService(ctx, r, newFake(), mustP("198.51.100.0/24"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids, err := r.projectIDs(ctx); err != nil || len(ids) != 0 {
+			t.Fatalf("%s: empty store %v %v", name, ids, err)
+		}
+		if _, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")}); err != nil {
+			t.Fatal(err)
+		}
+		if ids, err := r.projectIDs(ctx); err != nil || len(ids) != 1 || ids[0] != "proj" {
+			t.Fatalf("%s: %v %v", name, ids, err)
+		}
+	}
+}

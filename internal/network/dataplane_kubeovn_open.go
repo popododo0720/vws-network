@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"time"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -31,6 +32,10 @@ type KubeOVNConfig struct {
 	// DirectNADNamespace is the VM namespace where the direct NADs live
 	// (vws-deploy#125). Required with Direct; it has no default.
 	DirectNADNamespace string
+	// GatewayNodes get ovn.kubernetes.io/external-gw=true, rechecked every
+	// GatewayRecheck (default 30s) while any VPC exists. No other node is touched.
+	GatewayNodes   []string
+	GatewayRecheck time.Duration
 }
 
 const defaultNADNamespace = "vws-system"
@@ -39,7 +44,7 @@ const defaultNADNamespace = "vws-system"
 var inClusterConfig = rest.InClusterConfig
 
 func (c KubeOVNConfig) selected() bool {
-	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled() || len(c.Direct) > 0
+	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled() || len(c.Direct) > 0 || len(c.GatewayNodes) > 0
 }
 
 // newDataplane is the one place a Config becomes a dataplane.
@@ -75,5 +80,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, gatewayNodes: cfg.GatewayNodes}, nil
 }

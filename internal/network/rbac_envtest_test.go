@@ -24,6 +24,7 @@ var clusterRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"security-groups"}, Verbs: []string{"get", "create", "update", "delete"}},
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"ovn-fips"}, Verbs: []string{"get", "list", "create", "delete"}},
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"provider-networks", "vlans"}, Verbs: []string{"get", "create"}},
+	{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get", "patch"}},
 }
 
 var nadRules = []rbacv1.PolicyRule{
@@ -101,6 +102,17 @@ func TestEnvtestDocumentedRBACIsEnough(t *testing.T) {
 		if err := step(); err != nil {
 			t.Fatalf("step %d as the documented role: %v", i, err)
 		}
+	}
+	if err := admin.Create(ctx, node("gw-1", map[string]string{gatewayLabel: "false"})); err != nil {
+		t.Fatal(err)
+	}
+	gw := envKube(k.c, false)
+	gw.gatewayNodes = []string{"gw-1"}
+	if _, err := gw.labelGatewayNodes(ctx); err != nil {
+		t.Fatalf("gateway label as the documented role: %v", err)
+	}
+	if got, _ := nodeLabel(t, admin, "gw-1"); got != "true" {
+		t.Fatalf("gateway label %q, want true", got)
 	}
 	u := envKube(k.c, false)
 	u.externalSubnet = "vws-external"

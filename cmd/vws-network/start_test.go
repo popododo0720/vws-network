@@ -63,3 +63,12 @@ func TestParseDirect(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitList(t *testing.T) {
+	if got := splitList(" n1, ,n2,"); len(got) != 2 || got[0] != "n1" || got[1] != "n2" {
+		t.Fatalf("%q", got)
+	}
+	if got := splitList(""); got != nil {
+		t.Fatalf("%q", got)
+	}
+}
