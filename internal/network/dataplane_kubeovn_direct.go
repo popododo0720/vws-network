@@ -7,6 +7,10 @@ import (
 	"regexp"
 	"sort"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
@@ -157,6 +161,34 @@ func (k *kubeOVN) ensureDirect(ctx context.Context) error {
 		if err := k.ensureNAD(ctx, domain.SubnetID(name)); err != nil {
 			return fmt.Errorf("ensure direct network %s nad: %w", d.Name, err)
 		}
+	}
+	return nil
+}
+
+// validatePoolInExternalSubnet is the check for an external Subnet the
+// operator made (no underlay flags): it reads the Subnet's cidrBlock and
+// requires the elastic IP pool inside it, so every elastic IP is an address
+// Kube-OVN can hand out on the external network (#52).
+func (k *kubeOVN) validatePoolInExternalSubnet(ctx context.Context, pool netip.Prefix) error {
+	if k.underlay.enabled() || k.externalSubnet == "" {
+		return nil
+	}
+	o := &unstructured.Unstructured{}
+	o.SetGroupVersionKind(gvkSubnet)
+	if err := k.c.Get(ctx, client.ObjectKey{Name: k.externalSubnet}, o); err != nil {
+		if apierrors.IsNotFound(err) {
+			return invalid("external subnet %s does not exist", k.externalSubnet)
+		}
+		return fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
+	}
+	block, _, _ := unstructured.NestedString(o.Object, "spec", "cidrBlock")
+	cidr, err := netip.ParsePrefix(block)
+	if err != nil {
+		return invalid("external subnet %s cidrBlock %q is not an ipv4 prefix", k.externalSubnet, block)
+	}
+	cidr = cidr.Masked()
+	if pool.Bits() < cidr.Bits() || !cidr.Contains(pool.Addr()) {
+		return invalid("elastic ip pool %v is not inside external subnet %s cidr %v", pool, k.externalSubnet, cidr)
 	}
 	return nil
 }
