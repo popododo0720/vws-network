@@ -72,24 +72,3 @@ func TestKubeOVNRemoveNADRequiresOwnerAnnotation(t *testing.T) {
 		t.Fatal("owned NAD was kept")
 	}
 }
-
-func TestKubeOVNDeleteSNATKeepsForeignGateway(t *testing.T) {
-	ctx := context.Background()
-	k, c := newKube()
-	k.snat = true
-	sub := domain.Subnet{ID: "subnet-1", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
-	seed(t, c, gvkNatGW, "", natGatewayName(sub.VPC), "", map[string]any{}, nil)
-	gw := getObj(t, c, gvkNatGW, natGatewayName(sub.VPC))
-	if err := unstructured.SetNestedField(gw.Object, "subnet-1", "spec", "subnet"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Update(ctx, gw); err != nil {
-		t.Fatal(err)
-	}
-	if err := k.deleteSNAT(ctx, sub); !isConflict(err) {
-		t.Fatalf("err = %v, want conflict", err)
-	}
-	if !exists(c, gvkNatGW, "", natGatewayName(sub.VPC)) {
-		t.Fatal("foreign gateway was deleted")
-	}
-}

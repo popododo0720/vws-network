@@ -19,8 +19,8 @@ import (
 // clusterRules is docs/rbac.md as code: every cluster scoped verb the
 // Kube-OVN dataplane uses. nadRules is the NAD namespace Role.
 var clusterRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"vpcs", "ovn-eips", "ovn-snat-rules", "vpc-nat-gateways"}, Verbs: []string{"get", "create", "delete"}},
-	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"subnets"}, Verbs: []string{"get", "list", "create", "delete"}},
+	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"vpcs", "ovn-eips", "ovn-snat-rules"}, Verbs: []string{"get", "create", "delete"}},
+	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"subnets"}, Verbs: []string{"get", "create", "delete"}},
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"security-groups"}, Verbs: []string{"get", "create", "update", "delete"}},
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"ovn-fips"}, Verbs: []string{"get", "list", "create", "delete"}},
 	{APIGroups: []string{"kubeovn.io"}, Resources: []string{"provider-networks", "vlans"}, Verbs: []string{"get", "create"}},
@@ -110,24 +110,22 @@ func TestEnvtestDocumentedRBACIsEnough(t *testing.T) {
 	}
 }
 
-// TestEnvtestDeleteSubnetNeedsSubnetList is vws-test 45b: without subnets
-// list, DeleteSubnet with -kube-snat cannot move the VPC gateway and fails.
-func TestEnvtestDeleteSubnetNeedsSubnetList(t *testing.T) {
+// TestEnvtestDeleteSubnetWithoutSubnetList is vws-test 45b after OVN-native
+// SNAT: DeleteSubnet with -kube-snat no longer lists subnets to move a VPC
+// gateway, so the documented role, which has no subnets list, deletes the
+// subnet, its rule and its address.
+func TestEnvtestDeleteSubnetWithoutSubnetList(t *testing.T) {
 	env, admin := startEnv(t)
 	ctx := context.Background()
-	noList := []rbacv1.PolicyRule{}
-	for _, r := range clusterRules {
-		if r.Resources[0] == "subnets" {
-			r = rbacv1.PolicyRule{APIGroups: r.APIGroups, Resources: r.Resources, Verbs: []string{"get", "create", "delete"}}
-		}
-		noList = append(noList, r)
-	}
-	k := envKube(userWith(t, env, admin, "no-list", noList), true)
+	k := envKube(userWith(t, env, admin, "no-list", clusterRules), true)
 	a := domain.Subnet{ID: "subnet-a", VPC: "vpc-1", CIDR: mustP("10.0.1.0/24")}
 	if err := k.ensureSubnet(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := k.deleteSubnet(ctx, a); !apierrors.IsForbidden(err) {
-		t.Fatalf("delete without subnets list err %v, want Forbidden", err)
+	if err := k.deleteSubnet(ctx, a); err != nil {
+		t.Fatalf("delete with the documented role: %v", err)
+	}
+	if exists(admin, gvkSubnet, "", string(a.ID)) || exists(admin, gvkSnat, "", snatName(a.ID)) {
+		t.Fatal("subnet or snat rule left behind")
 	}
 }
