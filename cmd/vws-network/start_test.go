@@ -48,3 +48,18 @@ func TestParseUnderlayExclude(t *testing.T) {
 		t.Fatalf("bad exclude err %v", err)
 	}
 }
+
+func TestParseDirect(t *testing.T) {
+	if got, err := parseDirect(" "); err != nil || got != nil {
+		t.Fatalf("empty: %v %v", got, err)
+	}
+	got, err := parseDirect(`[{"name":"prod","providerNetwork":"vws-pn0","interface":"ens3","vlan":200,"cidr":"192.168.200.0/24","gateway":"192.168.200.1","exclude":["192.168.200.2..192.168.200.20"]}]`)
+	if err != nil || len(got) != 1 || got[0].Name != "prod" || got[0].VLANID != 200 || got[0].CIDR.String() != "192.168.200.0/24" || len(got[0].Exclude) != 1 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, bad := range []string{`[{"name":"x","vlanId":1}]`, `{"name":"x"}`, `[] []`, `[{"cidr":"nope"}]`} {
+		if _, err := parseDirect(bad); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+}

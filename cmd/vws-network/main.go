@@ -37,6 +37,7 @@ func main() {
 	underlayCIDR := flag.String("kube-underlay-cidr", "", "CIDR of the external network; must contain -pool")
 	underlayGW := flag.String("kube-underlay-gateway", "", "gateway of the external network; inside -kube-underlay-cidr and outside -pool")
 	underlayExclude := flag.String("kube-underlay-exclude", "", "comma-separated addresses or a..b ranges of the external network Kube-OVN must not hand out; the gateway is always excluded")
+	directFlag := flag.String("kube-direct-networks", "", `direct networks as one JSON array line: [{"name","providerNetwork","interface","vlan","cidr","gateway","exclude"}]; each becomes Subnet and NAD vws-direct-<name> and the read-only API subnet subnet-direct-<name>`)
 	flag.Parse()
 	pool, err := parseStart(*dbPath, *poolFlag)
 	if err != nil {
@@ -49,6 +50,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "vws-network:", err)
 		os.Exit(2)
 	}
+	direct, err := parseDirect(*directFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vws-network:", err)
+		os.Exit(2)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, *listen, *dbPath, pool, network.KubeOVNConfig{
@@ -57,6 +63,7 @@ func main() {
 		NADNamespace:   *nadNamespace,
 		SNAT:           *snat,
 		Underlay:       underlay,
+		Direct:         direct,
 	}); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelError, "vws-network stopped", slog.String(obs.FieldErr, err.Error()))
 		stop()
