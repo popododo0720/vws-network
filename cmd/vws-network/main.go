@@ -97,6 +97,7 @@ func run(ctx context.Context, listen, dbPath string, pool netip.Prefix, kube net
 		}
 	}()
 	health.Default().Register("network", svc.Ready)
+	obs.M().RegisterQueue("network.operations", svc.PendingOperations, nil)
 
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {

@@ -380,3 +380,34 @@ func TestRepoProjectIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestRepoPending(t *testing.T) {
+	ctx := context.Background()
+	for name, open := range map[string]func(t *testing.T) repository{
+		"memory": func(*testing.T) repository { return newMemRepo() },
+		"sqlite": func(t *testing.T) repository {
+			r, err := openSQLite(ctx, filepath.Join(t.TempDir(), "q.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { closeOrFail(t, r.close) })
+			return r
+		},
+	} {
+		r := open(t)
+		svc, err := newService(ctx, r, newFake(), mustP("198.51.100.0/24"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := svc.PendingOperations(); n != 0 {
+			t.Fatalf("%s: empty store pending %d", name, n)
+		}
+		// newService starts no workers, so the operation stays pending.
+		if _, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")}); err != nil {
+			t.Fatal(err)
+		}
+		if n := svc.PendingOperations(); n != 1 {
+			t.Fatalf("%s: pending %d, want 1", name, n)
+		}
+	}
+}

@@ -23,6 +23,8 @@ type repository interface {
 	addressesInUse(ctx context.Context) (map[netip.Addr]bool, error)
 	// projectIDs lists every project that has stored state.
 	projectIDs(ctx context.Context) ([]domain.ProjectID, error)
+	// pending counts the operations that are not yet succeeded or failed.
+	pending(ctx context.Context) (int64, error)
 	key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error)
 	operation(ctx context.Context, p domain.ProjectID, id string) (domain.Operation, error)
 	commit(ctx context.Context, c commit) error
