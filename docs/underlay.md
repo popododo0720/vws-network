@@ -36,13 +36,13 @@ metadata: {name: <external-subnet>, annotations: {vws.popododo0720.io/id: <exter
 spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <provider>-vlan<id>, excludeIps: [<gateway>, <exclude>...]}
 ```
 
-모든 Vpc는 `spec.extraExternalSubnets: [<-kube-external-subnet>]`로 외부 Subnet에 붙는다. OvnEip, OvnFip, OvnSnatRule이 이것을 쓴다. 게이트웨이 노드를 정하는 `kube-system/ovn-external-gw-config` ConfigMap은 이 서비스가 건드리지 않는다. 배포 쪽이 만든다(vws-deploy#127).
+모든 Vpc는 `spec.enableExternal: true`, `spec.extraExternalSubnets: [<-kube-external-subnet>]`, 기본 라우트 `staticRoutes: [{cidr: 0.0.0.0/0, nextHopIP: <외부 게이트웨이>, policy: policyDst}]`로 외부 Subnet에 붙는다. 외부 게이트웨이는 underlay를 켜면 `-kube-underlay-gateway`, 아니면 운영자가 만든 외부 Subnet의 `spec.gateway`다(없으면 `domain.Invalid`). 이 셋이 있어야 OvnSnatRule이 동작했다(vws-test 42, 43). 게이트웨이 노드를 정하는 `kube-system/ovn-external-gw-config` ConfigMap은 이 서비스가 건드리지 않는다. 배포 쪽이 만든다(vws-deploy#127).
 
 - 같은 이름의 객체가 id annotation 없이 있거나 우리가 쓰는 spec 필드가 다르면 `domain.Conflict`로 시작을 거절한다. 살아 있는 물리망을 덮어쓰지 않는다. 운영자가 미리 만든 외부 Subnet을 계속 쓰려면 underlay 플래그를 주지 않는다.
 - 서비스는 이 객체를 지우지 않는다. 지우는 것은 운영자 몫이다.
 - 배포 RBAC에 `provider-networks`, `vlans`의 `get`, `create`와 `subnets`의 `create`(이미 있음)가 필요하다. vws-deploy#149(PR #152)가 더한다.
 - `excludeIps`에 EIP 풀을 넣지 않는다. Kube-OVN v1.16.12가 excludeIps 안의 주소를 OvnEip `v4Ip`로 받는지 실측한 뒤 정한다(vws-deploy#125 "Subnet의 excludeIps"). 그 전에는 Kube-OVN이 VPC lrp 주소를 풀 안에서 고를 수 있다.
-- 이 변경 전에 만든 Vpc는 `extraExternalSubnets`가 없어서 다시 ensure하면 `domain.Conflict`가 난다. 덮어쓰지 않는다. 복구는 `docs/kube-ovn-conflict-recovery.md`를 따른다.
+- 이 변경 전에 만든 Vpc는 `enableExternal`, `extraExternalSubnets`, 기본 라우트가 없어서 다시 ensure하면 `domain.Conflict`가 난다. 덮어쓰지 않는다. 복구는 `docs/kube-ovn-conflict-recovery.md`를 따른다.
 
 ## 노드망 인터페이스 (vws-deploy#125)
 

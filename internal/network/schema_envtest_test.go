@@ -126,6 +126,7 @@ func TestEnvtestSchemaKeepsEveryField(t *testing.T) {
 	_, c := startEnv(t)
 	ctx := context.Background()
 	k := strictKube(t, c, false)
+	k.externalSubnet = "vws-external"
 	k.underlay = UnderlayConfig{ProviderNetwork: "vws-pn0", Interface: "ens3", VLANID: 100, CIDR: mustP("10.78.0.0/24"), Gateway: mustP("10.78.0.1/32").Addr()}
 	if err := k.ensureUnderlay(ctx); err != nil {
 		t.Fatal(err)

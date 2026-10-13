@@ -87,7 +87,7 @@ func TestNewDataplaneUnderlaySelectsAndValidates(t *testing.T) {
 func TestEnsureUnderlayFlatAndVLAN(t *testing.T) {
 	ctx := context.Background()
 	for _, vlan := range []int{0, 204} {
-		k, c := newKube()
+		k, c := newBareKube()
 		k.underlay = flatUnderlay()
 		k.underlay.VLANID = vlan
 		for range 2 { // idempotent
@@ -118,13 +118,13 @@ func TestEnsureUnderlayFlatAndVLAN(t *testing.T) {
 
 func TestEnsureUnderlayRefusesForeignOrDifferent(t *testing.T) {
 	ctx := context.Background()
-	k, c := newKube()
+	k, c := newBareKube()
 	k.underlay = flatUnderlay()
 	seed(t, c, gvkProviderNetwork, "", "ext", "", map[string]any{"defaultInterface": "ens3"}, nil)
 	if err := k.ensureUnderlay(ctx); !isConflict(err) {
 		t.Fatalf("unannotated provider network err %v, want Conflict", err)
 	}
-	k, c = newKube()
+	k, c = newBareKube()
 	k.underlay = flatUnderlay()
 	seed(t, c, gvkSubnet, "", "external", "external", map[string]any{"protocol": "IPv4", "cidrBlock": "10.40.0.0/24", "gateway": "10.40.0.1", "vlan": "ext-vlan0"}, nil)
 	if err := k.ensureUnderlay(ctx); !isConflict(err) || !strings.Contains(err.Error(), "cidrBlock") {
@@ -133,7 +133,7 @@ func TestEnsureUnderlayRefusesForeignOrDifferent(t *testing.T) {
 }
 
 func TestReadyNeedsProviderNetwork(t *testing.T) {
-	k, c := newKube()
+	k, c := newBareKube()
 	k.underlay = flatUnderlay()
 	seed(t, c, gvkSubnet, "", "external", "external", map[string]any{}, nil)
 	if err := k.ready(context.Background()); err == nil || !strings.Contains(err.Error(), "provider network ext") {
@@ -178,7 +178,7 @@ func TestUnderlayExclude(t *testing.T) {
 			t.Fatalf("exclude %s err %v, want Invalid", r, err)
 		}
 	}
-	k, c := newKube()
+	k, c := newBareKube()
 	k.underlay = u
 	if err := k.ensureUnderlay(context.Background()); err != nil {
 		t.Fatal(err)

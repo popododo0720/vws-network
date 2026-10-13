@@ -14,9 +14,24 @@ import (
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
+// newKube starts with the operator's external Subnet, whose gateway is the
+// next hop of every VPC default route.
 func newKube() (*kubeOVN, client.Client) {
+	c := fake.NewClientBuilder().WithObjects(externalSubnetObject("external", "10.78.0.1")).Build()
+	return &kubeOVN{c: c, externalSubnet: "external", nadNamespace: "vws-system"}, c
+}
+
+// newBareKube has no external Subnet, for tests that make it.
+func newBareKube() (*kubeOVN, client.Client) {
 	c := fake.NewClientBuilder().Build()
 	return &kubeOVN{c: c, externalSubnet: "external", nadNamespace: "vws-system"}, c
+}
+
+func externalSubnetObject(name, gateway string) *unstructured.Unstructured {
+	o := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"cidrBlock": "10.78.0.0/24", "gateway": gateway, "protocol": "IPv4"}}}
+	o.SetGroupVersionKind(gvkSubnet)
+	o.SetName(name)
+	return o
 }
 
 func isInvalid(err error) bool {
@@ -64,8 +79,8 @@ func TestKubeOVNVPCAndSubnet(t *testing.T) {
 	}
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(schema.GroupVersionKind{Group: "kubeovn.io", Version: "v1", Kind: "SubnetList"})
-	if err := c.List(ctx, list); err != nil || len(list.Items) != 1 {
-		t.Fatalf("subnets %d err %v", len(list.Items), err)
+	if err := c.List(ctx, list); err != nil || len(list.Items) != 2 {
+		t.Fatalf("subnets %d (external and subnet-1) err %v", len(list.Items), err)
 	}
 }
 
