@@ -10,6 +10,13 @@ go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 
 `-listen`의 기본값은 `127.0.0.1:8080`이다.
 
+`-kubeconfig`(또는 인클러스터 ServiceAccount)로 Kube-OVN을 고르면, 시작할 때 API 서버에 닿지 못하면 서비스는 뜨지 않고 종료 코드 1로 끝난다. 오류는 `kube-ovn start checks need the API server, so vws-network does not start: ...`다. 이유는 서빙 전에 해야 하는 일이 모두 API 서버를 쓰기 때문이다.
+
+- underlay 플래그가 없으면 `-pool`이 운영자가 만든 외부 Subnet의 `cidrBlock` 안에 있는지 확인한다. 확인하지 않고 뜨면 Kube-OVN이 라우팅하지 못하는 엘라스틱 IP를 내줄 수 있다(#52).
+- underlay와 `-kube-direct-networks`가 있으면 그 ProviderNetwork, Vlan, Subnet, NAD를 만든다. 없이 뜨면 API가 존재하지 않는 direct subnet을 보여 준다.
+
+전에는 시작한 뒤 `/readyz`만 실패했다. 지금은 배포가 재시작으로 다시 시도하면 된다. 값이 틀린 경우(`domain.Invalid`, `domain.Conflict`)는 그 오류를 그대로 낸다. 자세한 내용은 `docs/underlay.md`에 있다.
+
 ## 테스트
 
 ```sh

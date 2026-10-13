@@ -55,7 +55,7 @@ spec: {protocol: IPv4, cidrBlock: <cidr>, gateway: <gateway>, vlan: <provider>-v
 
 ## 운영자가 만든 외부 Subnet (underlay 플래그 없음, #52)
 
-underlay 플래그가 없으면 `Open`이 시작 때 `-kube-external-subnet`을 Get해서 `spec.cidrBlock` 안에 `-pool`이 있는지 본다. Subnet이 없거나 cidrBlock이 IPv4 prefix가 아니거나 풀이 밖이면 `domain.Invalid`로 시작을 거절한다. API 서버에 닿지 못하면 시작이 실패한다(전에는 시작한 뒤 ready만 실패했다).
+underlay 플래그가 없으면 `Open`이 시작 때 `-kube-external-subnet`을 Get해서 `spec.cidrBlock` 안에 `-pool`이 있는지 본다. Subnet이 없거나 cidrBlock이 IPv4 prefix가 아니거나 풀이 밖이면 `domain.Invalid`로 시작을 거절한다. API 서버에 닿지 못하면 시작이 실패한다(전에는 시작한 뒤 ready만 실패했다). 이유와 오류 문구는 README "실행"에 있다.
 
 ## direct 네트워크 (`-kube-direct-networks`, #52, vws-deploy#125)
 

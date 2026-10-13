@@ -73,13 +73,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	if k, ok := dp.(*kubeOVN); ok {
-		if err := k.ensureUnderlay(ctx); err != nil {
-			return nil, err
-		}
-		if err := k.ensureDirect(ctx); err != nil {
-			return nil, err
-		}
-		if err := k.validatePoolInExternalSubnet(ctx, cfg.AddressPool); err != nil {
+		if err := k.startChecks(ctx, cfg.AddressPool); err != nil {
 			return nil, err
 		}
 	}

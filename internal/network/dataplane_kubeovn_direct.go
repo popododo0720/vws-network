@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -231,4 +232,27 @@ func (s *Service) onDirectOnly(st *domain.State, r domain.AssociateElasticIP) bo
 		}
 	}
 	return false
+}
+
+// startChecks is the Kube-OVN work Open does before it serves: create the
+// external underlay and the direct networks, and check the pool against the
+// external Subnet. Each needs the API server, and serving without them would
+// hand out elastic IPs Kube-OVN may not route or direct subnets that do not
+// exist, so an API server it cannot reach stops the start. A domain error
+// (Invalid, Conflict) is returned as is; anything else says why it stopped.
+func (k *kubeOVN) startChecks(ctx context.Context, pool netip.Prefix) error {
+	for _, step := range []func() error{
+		func() error { return k.ensureUnderlay(ctx) },
+		func() error { return k.ensureDirect(ctx) },
+		func() error { return k.validatePoolInExternalSubnet(ctx, pool) },
+	} {
+		if err := step(); err != nil {
+			var de *domain.Error
+			if errors.As(err, &de) {
+				return err
+			}
+			return fmt.Errorf("kube-ovn start checks need the API server, so vws-network does not start: it checks -pool against the external Subnet and creates the underlay and direct networks before it serves: %w", err)
+		}
+	}
+	return nil
 }

@@ -93,7 +93,7 @@ func TestOpenSelectsDataplaneFromConfig(t *testing.T) {
 		DatabasePath: filepath.Join(t.TempDir(), "b.db"),
 		AddressPool:  pool,
 		KubeOVN:      KubeOVNConfig{Kubeconfig: writeKubeconfig(t), ExternalSubnet: "ext", NADNamespace: "vws-system"},
-	}); err == nil || isInvalid(err) || !strings.Contains(err.Error(), "get external subnet ext") {
+	}); err == nil || isInvalid(err) || !strings.Contains(err.Error(), "get external subnet ext") || !strings.Contains(err.Error(), "does not start") {
 		t.Fatalf("unreachable kube-ovn err %v", err)
 	}
 	if _, err := Open(ctx, Config{DatabasePath: filepath.Join(t.TempDir(), "c.db"), AddressPool: pool, KubeOVN: KubeOVNConfig{ExternalSubnet: "x"}}); !errors.Is(err, rest.ErrNotInCluster) {
