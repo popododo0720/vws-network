@@ -18,6 +18,9 @@ const (
 	Dataplane
 	// Busy means a concurrent writer won and the caller should retry.
 	Busy
+	// Forbidden means the caller may not change the target at all, such as a
+	// direct network the deploy side owns.
+	Forbidden
 )
 
 // Error is the only error the service returns for a rejected call.

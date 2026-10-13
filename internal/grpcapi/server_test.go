@@ -25,11 +25,17 @@ import (
 )
 
 func TestAllErrKindsMapped(t *testing.T) {
-	for k := domain.Invalid; k <= domain.Busy; k++ {
+	for k := domain.Invalid; k <= domain.Forbidden; k++ {
 		code := status.Code(toStatus(&domain.Error{Kind: k, Msg: "x"}, ""))
 		if code == codes.OK || code == codes.Unknown || code == codes.Internal {
 			t.Fatalf("kind %d mapped to %s", k, code)
 		}
+	}
+}
+
+func TestForbiddenIsPermissionDenied(t *testing.T) {
+	if code := status.Code(toStatus(&domain.Error{Kind: domain.Forbidden, Msg: "x"}, "")); code != codes.PermissionDenied {
+		t.Fatalf("Forbidden mapped to %s", code)
 	}
 }
 
