@@ -73,13 +73,13 @@ func TestEnsureRejectsForeignObject(t *testing.T) {
 		},
 		"eip with another address": {
 			func(t *testing.T, c client.Client) {
-				seed(t, c, gvkEip, "", "eipalloc-1", "eipalloc-1", map[string]any{"externalSubnet": "external", "v4ip": "198.51.100.8", "type": "nat"}, nil)
+				seed(t, c, gvkEip, "", "eipalloc-1", "eipalloc-1", map[string]any{"externalSubnet": "external", "v4Ip": "198.51.100.8", "type": "nat"}, nil)
 			},
 			func(k *kubeOVN) error { return k.ensureElasticIP(ctx, eip) },
 		},
 		"eip with another external subnet": {
 			func(t *testing.T, c client.Client) {
-				seed(t, c, gvkEip, "", "eipalloc-1", "eipalloc-1", map[string]any{"externalSubnet": "other", "v4ip": "198.51.100.7", "type": "nat"}, nil)
+				seed(t, c, gvkEip, "", "eipalloc-1", "eipalloc-1", map[string]any{"externalSubnet": "other", "v4Ip": "198.51.100.7", "type": "nat"}, nil)
 			},
 			func(k *kubeOVN) error { return k.ensureElasticIP(ctx, eip) },
 		},

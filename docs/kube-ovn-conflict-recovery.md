@@ -50,3 +50,7 @@ Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.
 - `FAILED` 리소스를 다시 수렴시키는 재시도 RPC는 없다.
 - 충돌한 객체를 우리 spec으로 덮어쓰지 않는다. 생성은 덮어쓰지 않고 기존 객체는 읽기만 한다.
 - id annotation이 없거나 다른 객체를 대신 지우거나 옮기는 기능은 없다. 사람이 `kubectl`로 정리해야 한다.
+
+## v4ip로 만든 OvnEip (vws-test 38, 38b)
+
+이 수정 전 vws-network는 OvnEip에 `spec.v4ip`(소문자)를 썼다. Kube-OVN v1.16.12 CRD 필드는 `v4Ip`라서 API 서버가 그 필드를 버렸고, Kube-OVN이 외부 Subnet에서 다른 주소를 골랐다(API는 10.78.0.225, 실제 OvnEip는 10.78.0.201). 수정 뒤 같은 OvnEip를 다시 ensure하면 `spec.v4Ip`가 달라 `domain.Conflict`가 난다. 덮어쓰지 않는다. 그 주소에 OvnFip가 없으면 OvnEip를 지우고 연산을 다시 돌린다. OvnFip가 있으면 먼저 OvnFip를 지운다.
