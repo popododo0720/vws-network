@@ -39,7 +39,7 @@ func (k *kubeOVN) labelGatewayNodes(ctx context.Context) ([]string, error) {
 		}
 		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"labels": map[string]string{gatewayLabel: "true"}}})
 		if err != nil {
-			return fixed, err
+			return fixed, fmt.Errorf("label gateway node %s: %w", name, err)
 		}
 		if err := k.c.Patch(ctx, n, client.RawPatch(types.MergePatchType, patch)); err != nil {
 			errs = append(errs, fmt.Errorf("label gateway node %s: %w", name, err))
