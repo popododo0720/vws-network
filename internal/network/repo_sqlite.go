@@ -272,6 +272,16 @@ func (r *sqliteRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, e
 	return out, nil
 }
 
+// pending takes no lock: it is one read for a metric and must not wait behind
+// a worker's transaction.
+func (r *sqliteRepo) pending(ctx context.Context) (int64, error) {
+	var n int64
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM operations WHERE state IN (?, ?)`, int(domain.OpPending), int(domain.OpRunning)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("pending: %w", err)
+	}
+	return n, nil
+}
+
 func (r *sqliteRepo) projectIDs(ctx context.Context) ([]domain.ProjectID, error) {
 	if err := r.lock(ctx); err != nil {
 		return nil, err

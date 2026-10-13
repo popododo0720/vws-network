@@ -37,7 +37,7 @@ go test ./...
 
 ## 관측성
 
-`main`이 `obs.Setup`을 한 번 부르고 끝날 때 shutdown한다. 로그는 slog JSON이다. 메트릭은 `vws.rpc.server.*`, `vws.reconcile.total`·`vws.reconcile.duration`(데이터플레인 ensure 호출, `controller`=`network.<종류>`, `result`=`ok`·`conflict`·`error`), `vws.audit.events`(변경 RPC), `vws.panics`, `vws.errors`다. 레이블에 리소스 id나 요청 id는 넣지 않는다.
+`main`이 `obs.Setup`을 한 번 부르고 끝날 때 shutdown한다. 로그는 slog JSON이다. 메트릭은 `vws.rpc.server.*`, `vws.reconcile.total`·`vws.reconcile.duration`(데이터플레인 ensure 호출, `controller`=`network.<종류>`, `result`=`ok`·`conflict`·`error`), `vws.audit.events`(변경 RPC), `vws.panics`, `vws.errors`, `vws.queue.depth`(`queue`=`network.operations`, 끝나지 않은 연산 수), `vws.build.info`다. 메트릭은 OTLP로 내보내고 `/metrics` pull 엔드포인트는 없다(vws-lib에 Prometheus reader가 아직 없다). 레이블에 리소스 id나 요청 id는 넣지 않는다.
 
 이 서비스가 읽는 환경 변수:
 
