@@ -158,6 +158,23 @@ const staleHeartbeat = time.Minute
 
 // Ready reports whether the service can do work: the store answers, the worker
 // loops go round, and the dataplane answers a read. Liveness is not this.
+// PendingOperations is the number of operations not yet succeeded or failed,
+// for the vws.queue.depth metric. A store error is logged and reads as 0.
+//
+//nolint:contextcheck // the metric callback has no context; the read is bounded by its own timeout
+func (s *Service) PendingOperations() int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	n, err := s.repo.pending(ctx)
+	if err != nil {
+		if s.logf != nil {
+			s.logf("network: pending operations: %v", err)
+		}
+		return 0
+	}
+	return n
+}
+
 func (s *Service) Ready(ctx context.Context) error {
 	if err := s.repo.ping(ctx); err != nil {
 		return fmt.Errorf("store: %w", err)

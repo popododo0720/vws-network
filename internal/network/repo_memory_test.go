@@ -88,6 +88,20 @@ func (r *memRepo) projectIDs(ctx context.Context) ([]domain.ProjectID, error) {
 	return out, nil
 }
 
+func (r *memRepo) pending(ctx context.Context) (int64, error) {
+	if err := r.lock(ctx); err != nil {
+		return 0, err
+	}
+	defer r.unlock()
+	var n int64
+	for _, j := range r.jobs {
+		if j.op.State == domain.OpPending || j.op.State == domain.OpRunning {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *memRepo) key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error) {
 	if err := r.lock(ctx); err != nil {
 		return job{}, false, err
