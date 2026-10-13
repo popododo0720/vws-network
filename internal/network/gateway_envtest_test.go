@@ -22,7 +22,6 @@ import (
 func TestEnvtestGatewayLabelComesBack(t *testing.T) {
 	env, c := startEnv(t)
 	ctx := context.Background()
-	seed(t, c, gvkSubnet, "", "external", "", map[string]any{"cidrBlock": "10.78.0.0/24", "gateway": "10.78.0.1", "protocol": "IPv4"}, nil)
 	for _, n := range []string{"gw1", "gw2", "worker"} {
 		if err := c.Create(ctx, node(n, map[string]string{gatewayLabel: "false"})); err != nil {
 			t.Fatal(err)
