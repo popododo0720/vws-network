@@ -182,7 +182,10 @@ func (k *kubeOVN) validatePoolInExternalSubnet(ctx context.Context, pool netip.P
 		}
 		return fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
 	}
-	block, _, _ := unstructured.NestedString(o.Object, "spec", "cidrBlock")
+	block, _, err := unstructured.NestedString(o.Object, "spec", "cidrBlock")
+	if err != nil {
+		return invalid("external subnet %s cidrBlock: %v", k.externalSubnet, err)
+	}
 	cidr, err := netip.ParsePrefix(block)
 	if err != nil {
 		return invalid("external subnet %s cidrBlock %q is not an ipv4 prefix", k.externalSubnet, block)
