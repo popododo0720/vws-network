@@ -272,6 +272,30 @@ func (r *sqliteRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, e
 	return out, nil
 }
 
+func (r *sqliteRepo) projectIDs(ctx context.Context) ([]domain.ProjectID, error) {
+	if err := r.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer r.unlock()
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM projects ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("projectIDs: %w", err)
+	}
+	defer closeLogged(ctx, rows)
+	var out []domain.ProjectID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("projectIDs: %w", err)
+		}
+		out = append(out, domain.ProjectID(id))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("projectIDs: %w", err)
+	}
+	return out, nil
+}
+
 func (r *sqliteRepo) key(ctx context.Context, p domain.ProjectID, k domain.IdempotencyKey) (job, bool, error) {
 	if err := r.lock(ctx); err != nil {
 		return job{}, false, err
