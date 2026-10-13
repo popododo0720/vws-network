@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -47,6 +48,8 @@ type kubeOVN struct {
 	nadNamespace string
 	// snat gives every subnet outbound SNAT through externalSubnet.
 	snat bool
+	// underlay, when enabled, is the external network this service creates.
+	underlay UnderlayConfig
 }
 
 // ensure creates the object, or accepts the existing one when it carries the
@@ -85,7 +88,9 @@ func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured
 		return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has id annotation %q, want %q", kind, key, got, id)}
 	}
 	haveSpec := nestedMap(have.Object, "spec")
-	for field, w := range spec {
+	// Sorted, so a Conflict always names the same first differing field.
+	for _, field := range slices.Sorted(maps.Keys(spec)) {
+		w := spec[field]
 		if slices.Contains(ignore, field) {
 			continue
 		}
@@ -146,7 +151,10 @@ func (k *kubeOVN) ensureVPC(ctx context.Context, v domain.VPC) error {
 	if err := domain.CheckVPCCIDR(v.CIDR); err != nil {
 		return err
 	}
-	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{})
+	// extraExternalSubnets attaches the VPC to the external Subnet, which
+	// OvnEip, OvnFip and OvnSnatRule need. The gateway ConfigMap
+	// ovn-external-gw-config belongs to the deploy side (vws-deploy#127).
+	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{"extraExternalSubnets": []any{k.externalSubnet}})
 }
 
 func (k *kubeOVN) deleteVPC(ctx context.Context, v domain.VPC) error {
@@ -198,6 +206,13 @@ func (k *kubeOVN) ready(ctx context.Context) error {
 	o.SetGroupVersionKind(gvkSubnet)
 	if err := k.c.Get(ctx, client.ObjectKey{Name: k.externalSubnet}, o); err != nil {
 		return fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
+	}
+	if k.underlay.enabled() {
+		pn := &unstructured.Unstructured{}
+		pn.SetGroupVersionKind(gvkProviderNetwork)
+		if err := k.c.Get(ctx, client.ObjectKey{Name: k.underlay.ProviderNetwork}, pn); err != nil {
+			return fmt.Errorf("get provider network %s: %w", k.underlay.ProviderNetwork, err)
+		}
 	}
 	return nil
 }

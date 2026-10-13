@@ -26,19 +26,27 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "grpc listen address")
 	dbPath := flag.String("db", "", "sqlite database path")
-	poolFlag := flag.String("pool", "", "elastic ip pool cidr")
+	poolFlag := flag.String("pool", "", "elastic ip pool cidr; required, no default, and never an RFC 5737 documentation range")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane and takes precedence over the in-cluster config")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required for Kube-OVN, and without -kubeconfig it selects the in-cluster service account")
 	nadNamespace := flag.String("kube-nad-namespace", "", "namespace of the per-subnet NetworkAttachmentDefinitions; defaults to vws-system when Kube-OVN is selected")
 	snat := flag.Bool("kube-snat", false, "give every subnet outbound SNAT through -kube-external-subnet")
+	providerNetwork := flag.String("kube-provider-network", "", "Kube-OVN ProviderNetwork to create for the external network (at most 12 characters); selects the underlay")
+	underlayIface := flag.String("kube-underlay-interface", "", "node NIC the provider network binds, for example ens3; required with -kube-provider-network")
+	vlanID := flag.Int("kube-underlay-vlan", 0, "VLAN tag of the external network: 0 is flat, 1-4094 tagged")
+	underlayCIDR := flag.String("kube-underlay-cidr", "", "CIDR of the external network; must contain -pool")
+	underlayGW := flag.String("kube-underlay-gateway", "", "gateway of the external network; inside -kube-underlay-cidr and outside -pool")
+	underlayExclude := flag.String("kube-underlay-exclude", "", "comma-separated addresses or a..b ranges of the external network Kube-OVN must not hand out; the gateway is always excluded")
 	flag.Parse()
-	if *dbPath == "" || *poolFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat]]")
+	pool, err := parseStart(*dbPath, *poolFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vws-network:", err)
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
-	pool, err := netip.ParsePrefix(*poolFlag)
+	underlay, err := parseUnderlay(*providerNetwork, *underlayIface, *vlanID, *underlayCIDR, *underlayGW, *underlayExclude)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "-pool:", err)
+		fmt.Fprintln(os.Stderr, "vws-network:", err)
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -48,6 +56,7 @@ func main() {
 		ExternalSubnet: *externalSubnet,
 		NADNamespace:   *nadNamespace,
 		SNAT:           *snat,
+		Underlay:       underlay,
 	}); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelError, "vws-network stopped", slog.String(obs.FieldErr, err.Error()))
 		stop()

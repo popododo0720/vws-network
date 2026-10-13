@@ -60,9 +60,17 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.DatabasePath == "" {
 		return nil, &domain.Error{Kind: domain.Invalid, Msg: "database path is required"}
 	}
+	if err := validatePoolInUnderlay(cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
+		return nil, err
+	}
 	dp, err := newDataplane(cfg.KubeOVN)
 	if err != nil {
 		return nil, err
+	}
+	if k, ok := dp.(*kubeOVN); ok {
+		if err := k.ensureUnderlay(ctx); err != nil {
+			return nil, err
+		}
 	}
 	repo, err := openSQLite(ctx, cfg.DatabasePath)
 	if err != nil {
