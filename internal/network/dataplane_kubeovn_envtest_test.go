@@ -189,6 +189,7 @@ func kubeconfigFor(t *testing.T, env *envtest.Environment) string {
 func TestEnvtestServiceThroughOpen(t *testing.T) {
 	env, c := startEnv(t)
 	ctx := context.Background()
+	seed(t, c, gvkSubnet, "", "external", "", map[string]any{"protocol": "IPv4", "cidrBlock": "198.51.100.0/24"}, nil)
 	svc, err := Open(ctx, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "net.db"),
 		AddressPool:  mustP("198.51.100.0/24"),
