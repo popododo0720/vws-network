@@ -151,10 +151,43 @@ func (k *kubeOVN) ensureVPC(ctx context.Context, v domain.VPC) error {
 	if err := domain.CheckVPCCIDR(v.CIDR); err != nil {
 		return err
 	}
-	// extraExternalSubnets attaches the VPC to the external Subnet, which
-	// OvnEip, OvnFip and OvnSnatRule need. The gateway ConfigMap
+	gw, err := k.externalGateway(ctx)
+	if err != nil {
+		return err
+	}
+	// enableExternal and extraExternalSubnets attach the VPC router to the
+	// external Subnet, which OvnEip, OvnFip and OvnSnatRule need. The default
+	// route sends traffic that leaves the VPC to the external gateway; without
+	// it SNAT matches nothing (vws-test 42, 43). The gateway ConfigMap
 	// ovn-external-gw-config belongs to the deploy side (vws-deploy#127).
-	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{"extraExternalSubnets": []any{k.externalSubnet}})
+	return k.ensure(ctx, gvkVpc, string(v.ID), map[string]any{
+		"enableExternal":       true,
+		"extraExternalSubnets": []any{k.externalSubnet},
+		"staticRoutes": []any{map[string]any{
+			"cidr":      anyIPv4.String(),
+			"nextHopIP": gw.String(),
+			"policy":    "policyDst",
+		}},
+	})
+}
+
+// externalGateway is the next hop of every VPC default route: the underlay
+// gateway when this service made the external Subnet, otherwise the gateway
+// the operator gave that Subnet.
+func (k *kubeOVN) externalGateway(ctx context.Context) (netip.Addr, error) {
+	if k.underlay.enabled() {
+		return k.underlay.Gateway, nil
+	}
+	o := &unstructured.Unstructured{}
+	o.SetGroupVersionKind(gvkSubnet)
+	if err := k.c.Get(ctx, client.ObjectKey{Name: k.externalSubnet}, o); err != nil {
+		return netip.Addr{}, fmt.Errorf("get external subnet %s: %w", k.externalSubnet, err)
+	}
+	gw, err := netip.ParseAddr(nestedString(o.Object, "spec", "gateway"))
+	if err != nil || !gw.Is4() {
+		return netip.Addr{}, &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("external subnet %s has no ipv4 spec.gateway for the vpc default route", k.externalSubnet)}
+	}
+	return gw, nil
 }
 
 func (k *kubeOVN) deleteVPC(ctx context.Context, v domain.VPC) error {

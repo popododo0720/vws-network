@@ -20,7 +20,7 @@ func TestEnvtestOpenCreatesUnderlay(t *testing.T) {
 		DatabasePath: filepath.Join(t.TempDir(), "net.db"),
 		AddressPool:  mustP("10.30.0.128/25"),
 		Workers:      1,
-		KubeOVN:      KubeOVNConfig{Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "external", NADNamespace: envNamespace, Underlay: u},
+		KubeOVN:      KubeOVNConfig{Kubeconfig: kubeconfigFor(t, env), ExternalSubnet: "vws-external", NADNamespace: envNamespace, Underlay: u},
 	}
 	for range 2 {
 		svc, err := Open(ctx, cfg)
@@ -32,7 +32,7 @@ func TestEnvtestOpenCreatesUnderlay(t *testing.T) {
 		}
 		closeOrFail(t, svc.Close)
 	}
-	if got := nestedString(get(t, c, gvkSubnet, "external").Object, "spec", "vlan"); got != "ext-vlan204" {
+	if got := nestedString(get(t, c, gvkSubnet, "vws-external").Object, "spec", "vlan"); got != "ext-vlan204" {
 		t.Fatalf("external subnet vlan %q", got)
 	}
 	cfg.KubeOVN.Underlay.Interface = "ens4"

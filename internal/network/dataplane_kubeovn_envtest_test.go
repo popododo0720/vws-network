@@ -46,6 +46,10 @@ func startEnv(t *testing.T) (*envtest.Environment, client.Client) {
 	if err := c.Create(context.Background(), ns); err != nil {
 		t.Fatal(err)
 	}
+	// The operator's external Subnet: its gateway is the VPC default route.
+	if err := c.Create(context.Background(), externalSubnetObject("external", "10.78.0.1")); err != nil {
+		t.Fatal(err)
+	}
 	return env, c
 }
 
