@@ -7,12 +7,11 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 | apiGroup | resource | verbs | 쓰는 곳 |
 | --- | --- | --- | --- |
 | kubeovn.io | vpcs | get, create, delete | `ensureVPC`, `deleteVPC` |
-| kubeovn.io | subnets | get, **list**, create, delete | `ensureSubnet`, `deleteSubnet`, `ready`(외부 Subnet get), `ensureUnderlay`. **list는 `-kube-snat`일 때 DeleteSubnet이 쓴다**: 지우는 서브넷이 VPC의 VpcNatGateway를 두고 있으면 `firstOtherSubnet`이 같은 VPC의 남은 서브넷을 list해서 게이트웨이를 옮긴다 |
+| kubeovn.io | subnets | get, create, delete | `ensureSubnet`, `deleteSubnet`, `ready`(외부 Subnet get), `ensureUnderlay`. list는 쓰지 않는다 |
 | kubeovn.io | security-groups | get, create, update, delete | `ensureGroup`, `ensureRule`/`deleteRule`(update), `deleteGroup` |
 | kubeovn.io | ovn-eips | get, create, delete | `ensureElasticIP`, `deleteElasticIP`, SNAT 주소 |
 | kubeovn.io | ovn-fips | get, **list**, create, delete | `ensureNAT`, `deleteNAT`. list는 `deleteElasticIP`가 그 주소를 쓰는 OvnFip이 남았는지 본다 |
 | kubeovn.io | ovn-snat-rules | get, create, delete | `ensureSNAT`, `deleteSNAT` |
-| kubeovn.io | vpc-nat-gateways | get, create, delete | `ensureGateway`, `rehomeGateway` |
 | kubeovn.io | provider-networks, vlans | get, create | `ensureUnderlay`(시작 때, 지우지 않음), `ready`(provider-networks get) |
 
 모든 delete는 먼저 get으로 id annotation과 UID를 읽는다(`removeObject`). 그래서 delete가 있는 resource에는 get이 반드시 있다.
@@ -23,8 +22,6 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 | --- | --- | --- | --- |
 | k8s.cni.cncf.io | network-attachment-definitions | get, create, delete | `ensureNAD`, `removeNAD` |
 
-## subnets list가 없을 때 (vws-test 45b, 45c)
+## subnets list와 vpc-nat-gateways (vws-test 45b, 45c)
 
-vws-deploy 차트의 network `rbac`에는 subnets `list`가 없다(2026-10-13 main 기준). `-kube-snat`으로 서브넷을 만든 뒤 DeleteSubnet을 부르면 규칙과 주소는 지워지지만 `firstOtherSubnet`의 list가 Forbidden이라 연산이 재시도만 하고 Subnet이 남는다(45b). 임시로 subnets list ClusterRole을 붙이자 끝났다(45c). `TestEnvtestDeleteSubnetNeedsSubnetList`가 이 실패를 재현한다. 차트에 subnets `list`를 더해야 한다.
-
-`-kube-snat`이 VpcNatGateway를 쓰지 않게 되면(OVN 네이티브 SNAT 수정) list와 vpc-nat-gateways 권한은 필요 없어진다. 그 수정이 머지되면 이 표도 줄인다.
+전 릴리스의 `-kube-snat`은 VPC마다 VpcNatGateway를 두고, 그 서브넷을 지울 때 같은 VPC의 남은 서브넷을 list해서 게이트웨이를 옮겼다. 그래서 subnets `list`가 없으면 DeleteSubnet이 재시도만 했다(45b, 45c). `-kube-snat`이 OVN 네이티브 SNAT(OvnEip + OvnSnatRule)만 쓰게 되면서 두 권한 모두 필요 없다. `TestEnvtestDeleteSubnetWithoutSubnetList`가 list 없는 이 표의 권한으로 SNAT 서브넷을 지운다. 이전 릴리스가 만든 VpcNatGateway는 운영자가 지운다(`docs/kube-ovn-conflict-recovery.md`). 차트에 이미 더한 subnets `list`와 vpc-nat-gateways는 빼도 된다.
