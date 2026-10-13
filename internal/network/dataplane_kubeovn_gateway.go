@@ -18,8 +18,10 @@ import (
 // this service puts it back instead.
 const gatewayLabel = "ovn.kubernetes.io/external-gw"
 
-// defaultGatewayRecheck is how often the gateway labels are checked.
-const defaultGatewayRecheck = 30 * time.Second
+// defaultGatewayRecheck is how often the gateway labels are checked. A check
+// is one GET per listed node, so it is cheap; it bounds how long SNAT stays
+// broken after kube-ovn-controller restarts and resets the label.
+const defaultGatewayRecheck = 5 * time.Second
 
 // labelGatewayNodes sets gatewayLabel=true on every node named by
 // -kube-gateway-nodes whose label is anything else. It never touches another
@@ -99,4 +101,16 @@ func (s *Service) anyVPC(ctx context.Context) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// gatewayUnkeptWarning is logged at start when gatewayLabelUnkept.
+const gatewayUnkeptWarning = "network: -kube-external-subnet is set but -kube-gateway-nodes is empty: " +
+	"the external gateway label is not kept, so a kube-ovn-controller restart breaks SNAT until the nodes are relabelled"
+
+// gatewayLabelUnkept reports a Kube-OVN dataplane with an external network but
+// no -kube-gateway-nodes: nothing restores the gateway label then, so the first
+// kube-ovn-controller restart breaks SNAT and EIPs until someone relabels the
+// nodes by hand.
+func gatewayLabelUnkept(k *kubeOVN) bool {
+	return k.externalSubnet != "" && len(k.gatewayNodes) == 0
 }

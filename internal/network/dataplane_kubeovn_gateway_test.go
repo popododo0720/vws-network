@@ -86,3 +86,15 @@ func TestGatewayNodesSelectKubeOVN(t *testing.T) {
 		t.Fatal("-kube-gateway-nodes alone must select Kube-OVN")
 	}
 }
+
+func TestGatewayLabelUnkept(t *testing.T) {
+	if !gatewayLabelUnkept(&kubeOVN{externalSubnet: "external"}) {
+		t.Fatal("no warning for an external network without gateway nodes")
+	}
+	if gatewayLabelUnkept(&kubeOVN{externalSubnet: "external", gatewayNodes: []string{"gw1"}}) {
+		t.Fatal("warning with gateway nodes")
+	}
+	if gatewayLabelUnkept(&kubeOVN{}) {
+		t.Fatal("warning without an external network")
+	}
+}

@@ -99,6 +99,10 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			period = defaultGatewayRecheck
 		}
 		svc.startGatewayLoop(k, period)
+	} else if ok {
+		if gatewayLabelUnkept(k) {
+			slog.Default().LogAttrs(ctx, slog.LevelWarn, gatewayUnkeptWarning, slog.String("label", gatewayLabel))
+		}
 	}
 	return svc, nil
 }
