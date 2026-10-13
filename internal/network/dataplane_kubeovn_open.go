@@ -32,6 +32,9 @@ type KubeOVNConfig struct {
 	// DirectNADNamespace is the VM namespace where the direct NADs live
 	// (vws-deploy#125). Required with Direct; it has no default.
 	DirectNADNamespace string
+	// VMNamespace is the namespace of the instance VMIs (vws-compute's VM
+	// namespace). An address attached to an instance reads its VMI there.
+	VMNamespace string
 	// GatewayNodes get ovn.kubernetes.io/external-gw=true, rechecked every
 	// GatewayRecheck (default 5s) while any VPC exists. No other node is touched.
 	GatewayNodes   []string
@@ -83,5 +86,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, gatewayNodes: cfg.GatewayNodes}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, vmNamespace: cfg.VMNamespace, gatewayNodes: cfg.GatewayNodes}, nil
 }

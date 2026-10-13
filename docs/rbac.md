@@ -25,6 +25,15 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 
 `-kube-direct-networks`를 줄 때만 필요하다.
 
+## VMI 읽기 Role (`-kube-vm-namespace`, VM 네임스페이스)
+
+| apiGroup | resource | verbs | 쓰는 곳 |
+| --- | --- | --- | --- |
+| kubevirt.io | virtualmachineinstances | get, list, watch | `(*kubeOVN).interfaceAddress`. 주소가 `spec.association`(instance, device)으로 붙으면 VMI `<instance id>`의 `status.interfaces[]`에서 `interfaceName`(없으면 `name`)이 device인 항목의 `ipAddress`를 읽어 OvnFip을 만든다. 지금은 get만 쓰고 list/watch는 나중 watch용이다 |
+
+- VMI가 없거나 IP가 아직 없으면 연산을 실패시키지 않고 계속 재시도한다(`errInterfaceNotReady`). 권한이 없으면(Forbidden) 보통 오류처럼 재시도하다 실패한다.
+- 연결을 풀거나 바꾸면 그 주소의 OvnFip을 지운다.
+
 ## 게이트웨이 노드 라벨 (`-kube-gateway-nodes`)
 
 - `-kube-gateway-nodes`를 주면 VPC가 하나라도 있는 동안 `-kube-gateway-recheck`(기본 5s)마다 그 노드들을 get하고, `ovn.kubernetes.io/external-gw`가 `true`가 아니면 merge patch로 `true`를 붙인다. kube-ovn-controller가 재시작하면 이 라벨을 `false`로 바꿔 SNAT이 깨진다. `ovn-external-gw-config` ConfigMap으로 고정하면 underlay가 깨져서 이 방식을 쓴다.

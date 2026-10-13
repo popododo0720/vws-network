@@ -691,3 +691,75 @@ func TestElasticIPAssociationSurvivesEncoding(t *testing.T) {
 		t.Fatalf("decoded attachment = %q %q", e.Instance, e.Device)
 	}
 }
+
+func attachedState() State {
+	p := netip.MustParsePrefix
+	return State{
+		VPCs:    map[VPCID]VPC{"vpc-1": {ID: "vpc-1", CIDR: p("10.8.0.0/16"), Status: StatusAvailable}},
+		Subnets: map[SubnetID]Subnet{"subnet-1": {ID: "subnet-1", VPC: "vpc-1", CIDR: p("10.8.1.0/24"), Status: StatusAvailable}},
+		ElasticIPs: map[ElasticIPID]ElasticIP{"eip-1": {
+			ID: "eip-1", VPC: "vpc-1", Address: netip.MustParseAddr("198.51.100.7"),
+			Instance: "projects/p/zones/z/instances/i-1", Device: "eth0", Status: StatusAvailable,
+		}},
+	}
+}
+
+// TestAttachedAddressPlansResolve: an address attached to an instance with no
+// private address yet asks the worker to resolve it, and NAT follows once
+// it is bound.
+func TestAttachedAddressPlansResolve(t *testing.T) {
+	st := attachedState()
+	acts, _, err := st.PlanKind(KindAddress, "eip-1")
+	if err != nil || len(acts) != 2 || acts[1].Kind != ActResolveNAT {
+		t.Fatalf("plan %v %v", acts, err)
+	}
+	if err := st.BindInterfaceAddress("eip-1", netip.MustParseAddr("10.8.1.5")); err != nil {
+		t.Fatal(err)
+	}
+	if e := st.ElasticIPs["eip-1"]; e.Subnet != "subnet-1" {
+		t.Fatalf("subnet %q", e.Subnet)
+	}
+	acts, _, err = st.PlanKind(KindAddress, "eip-1")
+	if err != nil || len(acts) != 2 || acts[1].Kind != ActEnsureNAT || acts[1].Addr != netip.MustParseAddr("10.8.1.5") {
+		t.Fatalf("plan after bind %v", acts)
+	}
+}
+
+func TestBindInterfaceAddressOutsideTheVPCIsInvalid(t *testing.T) {
+	st := attachedState()
+	err := st.BindInterfaceAddress("eip-1", netip.MustParseAddr("10.42.0.9"))
+	var de *Error
+	if !errors.As(err, &de) || de.Kind != Invalid {
+		t.Fatalf("err %v, want Invalid", err)
+	}
+}
+
+// TestSettleCarriesTheResolvedAddressOnlyForTheSameAttachment: a resolved
+// address is stored while the attachment is unchanged; when it changed under
+// the worker, the address goes to detaching so its NAT is removed.
+func TestSettleCarriesTheResolvedAddressOnlyForTheSameAttachment(t *testing.T) {
+	addr := netip.MustParseAddr("10.8.1.5")
+	cur := attachedState()
+	observed := cur.Clone()
+	if err := observed.BindInterfaceAddress("eip-1", addr); err != nil {
+		t.Fatal(err)
+	}
+	cur.SettleKind(KindAddress, "eip-1", observed)
+	if cur.ElasticIPs["eip-1"].Private != addr {
+		t.Fatalf("same attachment: private %v", cur.ElasticIPs["eip-1"].Private)
+	}
+
+	cur = attachedState()
+	if _, err := cur.SetElasticIPAssociation("eip-1", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	cur.SettleKind(KindAddress, "eip-1", observed)
+	e := cur.ElasticIPs["eip-1"]
+	if e.Private.IsValid() || len(e.detaching) != 1 || e.detaching[0] != addr {
+		t.Fatalf("changed attachment: private %v detaching %v", e.Private, e.detaching)
+	}
+	acts, _, err := cur.PlanKind(KindAddress, "eip-1")
+	if err != nil || acts[len(acts)-1].Kind != ActDeleteNAT || acts[len(acts)-1].Addr != addr {
+		t.Fatalf("plan after detach %v", acts)
+	}
+}

@@ -141,3 +141,45 @@ func TestEnvtestDeleteSubnetWithoutSubnetList(t *testing.T) {
 		t.Fatal("subnet or snat rule left behind")
 	}
 }
+
+// vmiRules is the VM namespace Role docs/rbac.md documents for an address
+// attached to an instance. Only get is called; list and watch are granted
+// for a later watch.
+var vmiRules = []rbacv1.PolicyRule{
+	{APIGroups: []string{"kubevirt.io"}, Resources: []string{"virtualmachineinstances"}, Verbs: []string{"get", "list", "watch"}},
+}
+
+// TestEnvtestVMIRoleIsEnough: without the VM namespace Role the VMI read is
+// forbidden (not a wait); with exactly vmiRules it returns the interface IP.
+func TestEnvtestVMIRoleIsEnough(t *testing.T) {
+	env, admin := startEnv(t)
+	ctx := context.Background()
+	vmi := &unstructured.Unstructured{Object: map[string]any{
+		"spec":   map[string]any{},
+		"status": map[string]any{"interfaces": []any{map[string]any{"name": "default", "interfaceName": "eth0", "ipAddress": "10.0.1.9"}}},
+	}}
+	vmi.SetGroupVersionKind(gvkVMI)
+	vmi.SetNamespace(envNamespace)
+	vmi.SetName("i-1")
+	if err := admin.Create(ctx, vmi); err != nil {
+		t.Fatal(err)
+	}
+	k := envKube(userWith(t, env, admin, "vmi-reader", clusterRules), false)
+	k.vmNamespace = envNamespace
+	if _, err := k.interfaceAddress(ctx, "projects/p/zones/z/instances/i-1", "eth0"); !apierrors.IsForbidden(err) {
+		t.Fatalf("without the VM namespace Role: %v, want Forbidden", err)
+	}
+	subj := []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "vmi-reader", APIGroup: rbacv1.GroupName}}
+	for _, o := range []client.Object{
+		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "vmi-reader-vms", Namespace: envNamespace}, Rules: vmiRules},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "vmi-reader-vms", Namespace: envNamespace}, Subjects: subj, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "vmi-reader-vms"}},
+	} {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool {
+		addr, err := k.interfaceAddress(ctx, "projects/p/zones/z/instances/i-1", "eth0")
+		return err == nil && addr == mustP("10.0.1.9/32").Addr()
+	})
+}
