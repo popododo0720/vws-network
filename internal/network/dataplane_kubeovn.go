@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -87,7 +88,9 @@ func (k *kubeOVN) ensureObject(ctx context.Context, o *unstructured.Unstructured
 		return &domain.Error{Kind: domain.Conflict, Msg: fmt.Sprintf("%s %s has id annotation %q, want %q", kind, key, got, id)}
 	}
 	haveSpec := nestedMap(have.Object, "spec")
-	for field, w := range spec {
+	// Sorted, so a Conflict always names the same first differing field.
+	for _, field := range slices.Sorted(maps.Keys(spec)) {
+		w := spec[field]
 		if slices.Contains(ignore, field) {
 			continue
 		}
