@@ -14,6 +14,7 @@ go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 
 - underlay 플래그가 없으면 `-pool`이 운영자가 만든 외부 Subnet의 `cidrBlock` 안에 있는지 확인한다. 확인하지 않고 뜨면 Kube-OVN이 라우팅하지 못하는 엘라스틱 IP를 내줄 수 있다(#52).
 - 주소를 `spec.association`(instance, device)으로 붙이면 `-kube-vm-namespace`의 VMI에서 그 인터페이스 IP를 읽어 OvnFip을 만들고, 연결을 풀면 지운다. VMI가 IP를 받을 때까지 연산은 pending으로 재시도한다(`docs/rbac.md`). VMI의 IP가 바뀌면 VMI watch가 저장된 Private와 OvnFip을 새 IP로 옮긴다.
+- VPC subnet의 VM MTU는 `-vm-mtu`(기본 9001, 68–9001)다. Subnet `spec.mtu`와 DHCP 옵션으로 내려간다. 1500 외부 경로는 `docs/mtu.md`.
 - underlay와 `-kube-direct-networks`가 있으면 그 ProviderNetwork, Vlan, Subnet, NAD를 만든다. 없이 뜨면 API가 존재하지 않는 direct subnet을 보여 준다.
 
 전에는 시작한 뒤 `/readyz`만 실패했다. 지금은 배포가 재시작으로 다시 시도하면 된다. 값이 틀린 경우(`domain.Invalid`, `domain.Conflict`)는 그 오류를 그대로 낸다. 자세한 내용은 `docs/underlay.md`에 있다.
