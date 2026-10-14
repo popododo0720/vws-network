@@ -101,25 +101,28 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		if period <= 0 {
 			period = defaultGatewayRecheck
 		}
-		svc.startGatewayLoop(k, period)
+		svc.startLoop(func(ctx context.Context) { svc.gatewayLoop(ctx, k, period) })
 	} else if ok {
 		if gatewayLabelUnkept(k) {
 			slog.Default().LogAttrs(ctx, slog.LevelWarn, gatewayUnkeptWarning, slog.String("label", gatewayLabel))
 		}
 	}
+	if k, ok := dp.(*kubeOVN); ok && k.vmNamespace != "" && k.w != nil {
+		svc.startLoop(func(ctx context.Context) { svc.vmiLoop(ctx, k) })
+	}
 	return svc, nil
 }
 
-// startGatewayLoop runs gatewayLoop until Close, which stops it before the
-// workers and the store.
+// startLoop runs loop until Close, which stops it before the workers and the
+// store.
 //
 //nolint:contextcheck // the loop outlives the Open context and stops through Close
-func (s *Service) startGatewayLoop(k *kubeOVN, period time.Duration) {
+func (s *Service) startLoop(loop func(context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.gatewayLoop(ctx, k, period)
+		loop(ctx)
 	}()
 	prev := s.stop
 	s.stop = func() {

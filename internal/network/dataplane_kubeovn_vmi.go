@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,20 +41,7 @@ func (k *kubeOVN) interfaceAddress(ctx context.Context, instance, device string)
 		}
 		return netip.Addr{}, fmt.Errorf("get vmi %s/%s: %w", k.vmNamespace, name, err)
 	}
-	ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces") //nolint:errcheck // absent and mistyped both read as empty
-	ip := ""
-	for _, field := range []string{"interfaceName", "name"} {
-		for _, raw := range ifaces {
-			m, ok := raw.(map[string]any)
-			if ok && nestedString(m, field) == device {
-				ip = nestedString(m, "ipAddress")
-				break
-			}
-		}
-		if ip != "" {
-			break
-		}
-	}
+	ip := vmiInterfaceIP(vmi, device)
 	if ip == "" {
 		return netip.Addr{}, fmt.Errorf("vmi %s/%s device %s: %w", k.vmNamespace, name, device, errInterfaceNotReady)
 	}
@@ -62,4 +50,27 @@ func (k *kubeOVN) interfaceAddress(ctx context.Context, instance, device string)
 		return netip.Addr{}, &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("vmi %s device %s reports address %q", name, device, ip)}
 	}
 	return addr, nil
+}
+
+// vmiInterfaceIP is the ipAddress KubeVirt reports for device on vmi, matched
+// on status.interfaces[].interfaceName (the guest name, eth0) first and then
+// .name (the KubeVirt network name). It is "" while there is none.
+func vmiInterfaceIP(vmi *unstructured.Unstructured, device string) string {
+	ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces") //nolint:errcheck // absent and mistyped both read as empty
+	for _, field := range []string{"interfaceName", "name"} {
+		for _, raw := range ifaces {
+			m, ok := raw.(map[string]any)
+			if ok && nestedString(m, field) == device {
+				if ip := nestedString(m, "ipAddress"); ip != "" {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// rawWatchFrom starts a watch at resourceVersion rv, the list it follows.
+func rawWatchFrom(rv string) *metav1.ListOptions {
+	return &metav1.ListOptions{ResourceVersion: rv}
 }
