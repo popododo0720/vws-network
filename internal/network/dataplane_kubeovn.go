@@ -59,6 +59,10 @@ type kubeOVN struct {
 	// w watches VMIs. It is the same client as c; tests that build a
 	// kubeOVN by hand may leave it nil, and then nothing is watched.
 	w client.WithWatch
+	// vmMTU is spec.mtu of every VPC subnet; Kube-OVN puts it on the VM
+	// interfaces and in the subnet's DHCPv4 options. 0 (a hand-built test
+	// kubeOVN) leaves Kube-OVN's own default.
+	vmMTU int
 	// gatewayNodes are the only nodes this service labels as external gateways.
 	gatewayNodes []string
 }
@@ -215,18 +219,35 @@ func (k *kubeOVN) ensureSubnet(ctx context.Context, s domain.Subnet) error {
 	if err := k.ensureNAD(ctx, s.ID); err != nil {
 		return err
 	}
-	if err := k.ensure(ctx, gvkSubnet, string(s.ID), map[string]any{
-		"vpc":       string(s.VPC),
-		"cidrBlock": s.CIDR.String(),
-		"protocol":  "IPv4",
-		"provider":  k.nadProvider(s.ID),
-	}); err != nil {
+	if err := k.ensure(ctx, gvkSubnet, string(s.ID), k.subnetSpec(s)); err != nil {
 		return err
 	}
 	if k.snat {
 		return k.ensureSNAT(ctx, s)
 	}
 	return nil
+}
+
+// subnetSpec is a VPC subnet's Kube-OVN spec. With vmMTU set it carries
+// spec.mtu, enableDHCP and dhcpV4Options "lease_time=3600,mtu=<mtu>".
+// Kube-OVN v1.16.12 gives the pod interface spec.mtu, and builds the
+// subnet's OVN DHCP_Options from dhcpV4Options (an options string, despite the
+// CRD's "UUID" description), filling the missing router, server_id and
+// server_mac itself (pkg/ovs/util.go buildDHCPv4Options). mtu is written out
+// so the DHCP value is the flag's, not one Kube-OVN derives.
+func (k *kubeOVN) subnetSpec(s domain.Subnet) map[string]any {
+	spec := map[string]any{
+		"vpc":       string(s.VPC),
+		"cidrBlock": s.CIDR.String(),
+		"protocol":  "IPv4",
+		"provider":  k.nadProvider(s.ID),
+	}
+	if k.vmMTU > 0 {
+		spec["mtu"] = int64(k.vmMTU)
+		spec["enableDHCP"] = true
+		spec["dhcpV4Options"] = fmt.Sprintf("lease_time=3600,mtu=%d", k.vmMTU)
+	}
+	return spec
 }
 
 func (k *kubeOVN) deleteSubnet(ctx context.Context, s domain.Subnet) error {
