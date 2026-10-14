@@ -97,7 +97,11 @@ func archViolations(pkgs map[string][]*ast.File) []string {
 	for dir, files := range pkgs {
 		for _, f := range files {
 			for _, spec := range f.Imports {
-				imp, _ := strconv.Unquote(spec.Path.Value)
+				imp, err := strconv.Unquote(spec.Path.Value)
+				if err != nil {
+					bad = append(bad, fmt.Sprintf("%s: import path %s: %v", dir, spec.Path.Value, err))
+					continue
+				}
 				for _, r := range packageRules {
 					if dir == r.dir && r.forbid(imp) {
 						bad = append(bad, fmt.Sprintf("%s imports %s: %s", dir, imp, r.why))
