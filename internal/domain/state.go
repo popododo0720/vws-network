@@ -409,6 +409,36 @@ func (s *State) BindInterfaceAddress(id ElasticIPID, addr netip.Addr) error {
 	return nil
 }
 
+// MoveInterfaceAddress follows a new address KubeVirt reports for the
+// interface an elastic IP is attached to. The old private address goes to
+// detaching (its NAT is deleted) and addr is bound as BindInterfaceAddress
+// does. It is a no-op, false, when the address is not attached to an
+// instance, has no private address yet (the worker resolves that), or
+// already holds addr.
+func (s *State) MoveInterfaceAddress(id ElasticIPID, addr netip.Addr) (bool, error) {
+	s.init()
+	e, ok := s.ElasticIPs[id]
+	if !ok {
+		return false, notFound("elastic ip not found")
+	}
+	if e.Instance == "" || !e.Private.IsValid() || e.Private == addr {
+		return false, nil
+	}
+	if err := usable(e.Status); err != nil {
+		return false, err
+	}
+	old := e.Private
+	e.Private, e.Subnet = netip.Addr{}, ""
+	if !slices.Contains(e.detaching, old) {
+		e.detaching = append(copyAddrs(e.detaching), old)
+	}
+	s.ElasticIPs[id] = e
+	if err := s.BindInterfaceAddress(id, addr); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // AssociateElasticIP binds eip to a usable host in exactly one subnet of its VPC.
 // The same address again is a no-op. A different address is a precondition failure.
 func (s *State) AssociateElasticIP(r AssociateElasticIP) error {
