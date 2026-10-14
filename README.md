@@ -34,7 +34,7 @@ go test ./...
 
 `third_party/vws-proto`는 `github.com/popododo0720/vws-proto`의 `main` `a1c6084`이다. `go.mod`의 replace가 그 경로를 가리킨다. vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
 
-`third_party/vws-lib`는 `github.com/popododo0720/vws-lib` main `fe9cd29`이다(아직 태그 없음, 다음 태그가 나오면 그 태그로 다시 벤더링한다). `scripts/vendor-lib.sh vendor fe9cd2996d975fffa4f1ea088c473a2dd2c5e6e2`으로 복사했고 replace로 쓴다. CI는 `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check`로 사본이 바뀌지 않았는지 본다. 사본은 고치지 않는다.
+`third_party/vws-lib`는 `github.com/popododo0720/vws-lib`의 `v0.2.0`(`fe9cd29`)이다. `scripts/vendor-lib.sh vendor v0.2.0`으로 복사했고 replace로 쓴다. CI는 `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check`로 사본이 바뀌지 않았는지 본다. 사본은 고치지 않는다.
 
 ## 관측성
 
