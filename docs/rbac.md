@@ -29,10 +29,11 @@ vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드
 
 | apiGroup | resource | verbs | 쓰는 곳 |
 | --- | --- | --- | --- |
-| kubevirt.io | virtualmachineinstances | get, list, watch | `(*kubeOVN).interfaceAddress`. 주소가 `spec.association`(instance, device)으로 붙으면 VMI `<instance id>`의 `status.interfaces[]`에서 `interfaceName`(없으면 `name`)이 device인 항목의 `ipAddress`를 읽어 OvnFip을 만든다. 지금은 get만 쓰고 list/watch는 나중 watch용이다 |
+| kubevirt.io | virtualmachineinstances | get, list, watch | `(*kubeOVN).interfaceAddress`. 주소가 `spec.association`(instance, device)으로 붙으면 VMI `<instance id>`의 `status.interfaces[]`에서 `interfaceName`(없으면 `name`)이 device인 항목의 `ipAddress`를 읽어 OvnFip을 만든다. list/watch는 `(*Service).vmiLoop`가 VM 네임스페이스 VMI를 지켜보다 연결된 인터페이스의 IP가 바뀌면 저장된 Private와 OvnFip을 새 IP로 옮기는 데 쓴다(#86) |
 
 - VMI가 없거나 IP가 아직 없으면 연산을 실패시키지 않고 계속 재시도한다(`errInterfaceNotReady`). 권한이 없으면(Forbidden) 보통 오류처럼 재시도하다 실패한다.
 - 연결을 풀거나 바꾸면 그 주소의 OvnFip을 지운다.
+- VMI IP가 잠깐 비면(재시작 중) 아무것도 바꾸지 않고, 새 IP가 보고되면 새 OvnFip을 만들고 옛 것을 지운다. 연결되지 않은 VMI는 무시한다. watch가 끊기면 1초 뒤, 그렇지 않아도 5분마다 다시 list한다.
 
 ## 게이트웨이 노드 라벨 (`-kube-gateway-nodes`)
 
