@@ -2,19 +2,21 @@
 # Insider-risk guards that need no repo-specific paths. Copy this file as-is into another repo.
 #
 #   guard-agents.sh agents [FILE]           FILE (default AGENTS.md) has the guardrail section and items 1-7
+#   guard-agents.sh rules [FILE]            every row of FILE's rule table names an enforcer; prints the Judgment count
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Closes #N"
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
-# GUARD_ITEMS (default 7), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default "## 규칙표"), GITHUB_REPOSITORY and an authenticated gh for push-watch.
 set -euo pipefail
 export LC_ALL=C
 
 MAIN=${GUARD_MAIN_BRANCH:-main}
 HEADING=${GUARD_HEADING:-## Insider-risk guardrails}
 ITEMS=${GUARD_ITEMS:-7}
+RULES_HEADING=${GUARD_RULES_HEADING:-## 규칙표}
 
 die() {
   echo "$*" >&2
@@ -36,6 +38,22 @@ cmd_agents() {
   if grep -q -E "^$((ITEMS + 1))\. " <<<"$section"; then
     die "agents: '${HEADING}' has more than ${ITEMS} numbered items"
   fi
+}
+
+# The table under RULES_HEADING: rule | enforcer. An enforcer cell is never
+# empty; a rule without a test, lint, or CI check says so with "Judgment".
+cmd_rules() {
+  local file=${1:-AGENTS.md} rows
+  [[ -f $file ]] || die "rules: ${file} does not exist"
+  grep -q -x -F -- "$RULES_HEADING" "$file" || die "rules: ${file} has no '${RULES_HEADING}' heading"
+  rows=$(awk -v h="$RULES_HEADING" '
+    $0 == h { on = 1; next }
+    on && /^## / { exit }
+    on && /^\|/ { if (++n > 2) print }' "$file")
+  [[ -n $rows ]] || die "rules: '${RULES_HEADING}' has no rule rows"
+  awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
+    die "rules: every row needs an enforcer or 'Judgment'"
+  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
 }
 
 cmd_pr_base() {
@@ -117,6 +135,16 @@ cmd_selftest() {
   awk -v h="$HEADING" '$0 == h { print "## Other"; next } { print }' "$good" >"$tmp/renamed.md"
   expect_fail "renamed heading" cmd_agents "$tmp/renamed.md"
 
+  local rules="$tmp/rules.md"
+  printf '# t\n%s\n\n| rule | enforcer |\n| --- | --- |\n| a | `TestA` |\n| b | Judgment. why |\n\n## next\n| x | |\n' "$RULES_HEADING" >"$rules"
+  expect_pass "every rule has an enforcer" cmd_rules "$rules"
+  [[ $(cmd_rules "$rules") == "rules: 2 rows, 1 Judgment" ]] || die "selftest: Judgment count is wrong"
+  echo "ok: Judgment count"
+  sed 's/^| a | `TestA` |$/| a |  |/' "$rules" >"$tmp/norule.md"
+  expect_fail "a rule without an enforcer" cmd_rules "$tmp/norule.md"
+  sed "s/^${RULES_HEADING}$/## other/" "$rules" >"$tmp/norules.md"
+  expect_fail "missing rule table heading" cmd_rules "$tmp/norules.md"
+
   expect_pass "base is main" cmd_pr_base "$MAIN"
   expect_fail "base is a stack branch" cmd_pr_base "feature-stack-base"
   expect_fail "empty base" cmd_pr_base ""
@@ -170,9 +198,10 @@ command_name=${1:-}
 shift || true
 case "$command_name" in
   agents) cmd_agents "$@" ;;
+  rules) cmd_rules "$@" ;;
   pr-base) cmd_pr_base "$@" ;;
   pr-body) cmd_pr_body "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|pr-body [FILE]|push-watch BEFORE AFTER|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|rules [FILE]|pr-base BASE|pr-body [FILE]|push-watch BEFORE AFTER|selftest>" ;;
 esac
