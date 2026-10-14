@@ -41,7 +41,7 @@ func (s *Service) vmiWatchOnce(ctx context.Context, k *kubeOVN) error {
 		return fmt.Errorf("list vmis in %s: %w", k.vmNamespace, err)
 	}
 	for i := range list.Items {
-		s.followVMI(ctx, &list.Items[i])
+		s.followVMI(ctx, k, &list.Items[i])
 	}
 	wctx, cancel := context.WithTimeout(ctx, vmiRelist)
 	defer cancel()
@@ -55,7 +55,7 @@ func (s *Service) vmiWatchOnce(ctx context.Context, k *kubeOVN) error {
 			continue
 		}
 		if vmi, ok := ev.Object.(*unstructured.Unstructured); ok {
-			s.followVMI(ctx, vmi)
+			s.followVMI(ctx, k, vmi)
 		}
 	}
 	return nil
@@ -65,7 +65,7 @@ func (s *Service) vmiWatchOnce(ctx context.Context, k *kubeOVN) error {
 // reported IP changed. An interface with no IP (a VM restarting) leaves the
 // address and its OvnFip alone until a new IP is reported. Addresses with no
 // private address yet are left to the worker's resolve.
-func (s *Service) followVMI(ctx context.Context, vmi *unstructured.Unstructured) {
+func (s *Service) followVMI(ctx context.Context, k *kubeOVN, vmi *unstructured.Unstructured) {
 	ids, err := s.repo.projectIDs(ctx)
 	if err != nil {
 		if s.logf != nil {
@@ -85,7 +85,7 @@ func (s *Service) followVMI(ctx context.Context, vmi *unstructured.Unstructured)
 			if !e.Private.IsValid() || e.Instance[strings.LastIndex(e.Instance, "/")+1:] != vmi.GetName() {
 				continue
 			}
-			addr, err := netip.ParseAddr(vmiInterfaceIP(vmi, e.Device))
+			addr, err := netip.ParseAddr(k.vmiInterfaceIP(ctx, vmi, e.Device))
 			if err != nil || addr == e.Private {
 				continue
 			}

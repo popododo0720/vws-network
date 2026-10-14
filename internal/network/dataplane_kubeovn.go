@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -63,6 +64,10 @@ type kubeOVN struct {
 	// interfaces and in the subnet's DHCPv4 options. 0 (a hand-built test
 	// kubeOVN) leaves Kube-OVN's own default.
 	vmMTU int
+	// warned is the last interface-pick warning per VMI and device
+	// (vmiInterfaceIP), so a retry or watch event does not log it again.
+	warnMu sync.Mutex
+	warned map[string]string
 	// gatewayNodes are the only nodes this service labels as external gateways.
 	gatewayNodes []string
 }
