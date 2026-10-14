@@ -23,6 +23,10 @@ import (
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
+// flagVMMTU is the one place the VM MTU flag is named, so a rename to match
+// the VWSCluster field (vws-deploy#236) is one line.
+const flagVMMTU = "vm-mtu"
+
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "grpc listen address")
 	dbPath := flag.String("db", "", "sqlite database path")
@@ -40,6 +44,7 @@ func main() {
 	directFlag := flag.String("kube-direct-networks", "", `direct networks as one JSON array line: [{"name","providerNetwork","interface","vlan","cidr","gateway","exclude"}]; each becomes Subnet and NAD vws-direct-<name> and the read-only API subnet subnet-direct-<name>`)
 	directNADNS := flag.String("kube-direct-nad-namespace", "", "VM namespace where the direct network NADs vws-direct-<name> are made (vws-deploy#125); required with -kube-direct-networks, no default")
 	vmNamespace := flag.String("kube-vm-namespace", "", "namespace of the instance VirtualMachineInstances (vws-compute's VM namespace); an address attached to an instance reads its interface IP there for the OvnFip")
+	vmMTU := flag.Int(flagVMMTU, network.DefaultVMMTU, "MTU of VM interfaces in VPC subnets (Kube-OVN Subnet spec.mtu and DHCP option 26), 68-9001; the chart sets it from VWSCluster spec.network.vmMTU")
 	gatewayNodes := flag.String("kube-gateway-nodes", "", "comma-separated nodes kept at ovn.kubernetes.io/external-gw=true while any VPC exists; no other node is touched")
 	gatewayRecheck := flag.Duration("kube-gateway-recheck", 5*time.Second, "how often -kube-gateway-nodes labels are checked and restored; 0 means the default, otherwise at least 1s")
 	flag.Parse()
@@ -72,6 +77,7 @@ func main() {
 		VMNamespace:        *vmNamespace,
 		GatewayNodes:       splitList(*gatewayNodes),
 		GatewayRecheck:     *gatewayRecheck,
+		VMMTU:              *vmMTU,
 	}); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelError, "vws-network stopped", slog.String(obs.FieldErr, err.Error()))
 		stop()

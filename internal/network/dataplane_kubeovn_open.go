@@ -39,6 +39,26 @@ type KubeOVNConfig struct {
 	// GatewayRecheck (default 5s) while any VPC exists. No other node is touched.
 	GatewayNodes   []string
 	GatewayRecheck time.Duration
+	// VMMTU is the MTU of VM interfaces in VPC subnets: Subnet spec.mtu, which
+	// Kube-OVN also hands out as DHCP option 26. 0 means DefaultVMMTU. The
+	// chart sets it from VWSCluster spec.network.vmMTU (vws-deploy#236).
+	VMMTU int
+}
+
+// DefaultVMMTU and the accepted VMMTU range. 9001 is the AWS VPC MTU; 68 is
+// the IPv4 minimum (RFC 791).
+const (
+	DefaultVMMTU = 9001
+	MinVMMTU     = 68
+	MaxVMMTU     = 9001
+)
+
+// CheckVMMTU rejects an MTU outside MinVMMTU..MaxVMMTU. 0 is the default.
+func CheckVMMTU(mtu int) error {
+	if mtu != 0 && (mtu < MinVMMTU || mtu > MaxVMMTU) {
+		return &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("vm mtu %d is outside %d..%d", mtu, MinVMMTU, MaxVMMTU)}
+	}
+	return nil
 }
 
 const defaultNADNamespace = "vws-system"
@@ -52,6 +72,12 @@ func (c KubeOVNConfig) selected() bool {
 
 // newDataplane is the one place a Config becomes a dataplane.
 func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
+	if err := CheckVMMTU(cfg.VMMTU); err != nil {
+		return nil, err
+	}
+	if cfg.VMMTU == 0 {
+		cfg.VMMTU = DefaultVMMTU
+	}
 	if !cfg.selected() {
 		return newFake(), nil
 	}
@@ -86,5 +112,5 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, vmNamespace: cfg.VMNamespace, w: c, gatewayNodes: cfg.GatewayNodes}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, vmNamespace: cfg.VMNamespace, w: c, gatewayNodes: cfg.GatewayNodes, vmMTU: cfg.VMMTU}, nil
 }
