@@ -56,6 +56,9 @@ type kubeOVN struct {
 	directNADNamespace string
 	// vmNamespace is where vws-compute runs instances as VMIs.
 	vmNamespace string
+	// w watches VMIs. It is the same client as c; tests that build a
+	// kubeOVN by hand may leave it nil, and then nothing is watched.
+	w client.WithWatch
 	// gatewayNodes are the only nodes this service labels as external gateways.
 	gatewayNodes []string
 }

@@ -82,9 +82,9 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	c, err := client.New(rc, client.Options{})
+	c, err := client.NewWithWatch(rc, client.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
-	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, vmNamespace: cfg.VMNamespace, gatewayNodes: cfg.GatewayNodes}, nil
+	return &kubeOVN{c: c, externalSubnet: cfg.ExternalSubnet, nadNamespace: cfg.NADNamespace, snat: cfg.SNAT, underlay: cfg.Underlay, direct: cfg.Direct, directNADNamespace: cfg.DirectNADNamespace, vmNamespace: cfg.VMNamespace, w: c, gatewayNodes: cfg.GatewayNodes}, nil
 }

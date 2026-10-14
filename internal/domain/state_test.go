@@ -763,3 +763,33 @@ func TestSettleCarriesTheResolvedAddressOnlyForTheSameAttachment(t *testing.T) {
 		t.Fatalf("plan after detach %v", acts)
 	}
 }
+
+// TestMoveInterfaceAddress: a new interface address replaces the bound one,
+// the old one's NAT is deleted, and the same or an unbound address is a no-op.
+func TestMoveInterfaceAddress(t *testing.T) {
+	st := attachedState()
+	oldAddr, newAddr := netip.MustParseAddr("10.8.1.5"), netip.MustParseAddr("10.8.1.6")
+	if changed, err := st.MoveInterfaceAddress("eip-1", newAddr); err != nil || changed {
+		t.Fatalf("unbound: %v %v, want a no-op", changed, err)
+	}
+	if err := st.BindInterfaceAddress("eip-1", oldAddr); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.MoveInterfaceAddress("eip-1", oldAddr); err != nil || changed {
+		t.Fatalf("same address: %v %v, want a no-op", changed, err)
+	}
+	if changed, err := st.MoveInterfaceAddress("eip-1", newAddr); err != nil || !changed {
+		t.Fatalf("move: %v %v", changed, err)
+	}
+	e := st.ElasticIPs["eip-1"]
+	if e.Private != newAddr || e.Subnet != "subnet-1" || len(e.detaching) != 1 || e.detaching[0] != oldAddr {
+		t.Fatalf("after move %+v", e)
+	}
+	acts, _, err := st.PlanKind(KindAddress, "eip-1")
+	if err != nil || len(acts) != 3 || acts[1].Kind != ActEnsureNAT || acts[1].Addr != newAddr || acts[2].Kind != ActDeleteNAT || acts[2].Addr != oldAddr {
+		t.Fatalf("plan %v %v", acts, err)
+	}
+	if _, err := st.MoveInterfaceAddress("eip-1", netip.MustParseAddr("10.42.0.1")); err == nil {
+		t.Fatal("an address outside the vpc moved")
+	}
+}
