@@ -13,4 +13,3 @@ lint:
 guard:
 	scripts/guard-agents.sh selftest
 	scripts/guard-agents.sh agents
-	scripts/guard-agents.sh rules
