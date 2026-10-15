@@ -91,14 +91,14 @@ This section is judgment and is not blocked by lint.
 Bots are insider risks too. The rules below have no exceptions.
 
 1. **Independent verification**: an important result (merge, security, data) is never verified by the bot/model that wrote it. Another bot (or a person) verifies it. (Process rule; CI cannot enforce it.)
-2. **Records**: every change leaves a trail of issue → PR (`Closes #N`) → commits. Work logs go in the PR body or issue comments in a form people can read. No force-push or history rewriting (except with the user's approval).
+2. **Records**: every change leaves a trail of issue → PR (`Part of #N`) → commits. Work logs go in the PR body or issue comments in a form people can read. No force-push or history rewriting (except with the user's approval).
 3. **Failure tests**: a new feature is not tested on the happy path only. Include at least one case each for power loss/restart, idempotent re-run and malicious or boundary input, or state in the PR why that is not possible.
 4. **Least privilege**: no direct pushes to main. Every change is a single PR from its own branch cut from main. No stacked PRs. No local merges. Tokens are scoped to the repo. RBAC covers only the resources the service code actually calls, as a Role (namespace scope) where possible.
 5. **Separated audit**: author bot ≠ verifier bot ≠ merge decision. An author bot never merges its own PR. Merge only when base==main and every CI check on the head commit is success.
 6. **Isolation and emergency stop**: a bot/agent is stopped immediately at the user's request or by the orchestrator stopping that bot's session and revoking its token (`gh auth`/PAT revoke). Risky work happens only in a sandbox (the box or a throwaway cluster). No access to production clusters.
 7. **Incident disclosure**: rule violations and incidents are never hidden; record them in an issue as `Cause / Impact / Action / Prevention` (label `incident`).
 
-This repo has no server-side protection (private, free plan). 1, 5 and 6 are process rules. For parts of 2 and 4, `.github/workflows/repo-guard.yml` checks the PR's base and `Closes #N`, and `.github/workflows/direct-push-watch.yml` reports after the fact any commit that reached main without a PR. This is detection, not blocking. The guard code is `scripts/guard-agents.sh`, and `make guard` runs `selftest` and `agents`.
+This repo has no server-side protection (private, free plan). 1, 5 and 6 are process rules. For parts of 2 and 4, `.github/workflows/repo-guard.yml` checks the PR's base, `Part of #N` and that no PR text or commit closes an issue, and `.github/workflows/direct-push-watch.yml` reports after the fact any commit that reached main without a PR. This is detection, not blocking. The guard code is `scripts/guard-agents.sh`, and `make guard` runs `selftest` and `agents`.
 
 Additional rules for this repo:
 
