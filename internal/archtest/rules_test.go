@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const rulesHeading = "## 규칙표"
+const rulesHeading = "## Rule table"
 
 // ruleTable reads the rule | enforcer table under rulesHeading. It returns
 // the row count, the rows whose enforcer starts with "Judgment", and every
