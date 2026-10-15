@@ -1,54 +1,54 @@
-# Kube-OVN 데이터플레인 RBAC
+# Kube-OVN dataplane RBAC
 
-vws-network가 Kube-OVN 데이터플레인에서 쓰는 권한 전부다. 코드(`internal/network/dataplane_kubeovn*.go`의 `k.c.Get/List/Create/Update/Delete`)를 읽고 적었고, `TestEnvtestDocumentedRBACIsEnough`가 이 표(nodes 포함)만 가진 사용자로 모든 경로를 돌린다. 표를 바꾸면 그 테스트의 `clusterRules`/`nadRules`도 같이 바꾼다.
+All the permissions vws-network uses in the Kube-OVN dataplane. They were written by reading the code (`k.c.Get/List/Create/Update/Delete` in `internal/network/dataplane_kubeovn*.go`), and `TestEnvtestDocumentedRBACIsEnough` runs every path as a user that has only this table (nodes included). When the table changes, change that test's `clusterRules`/`nadRules` with it.
 
 ## ClusterRole
 
-| apiGroup | resource | verbs | 쓰는 곳 |
+| apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
 | kubeovn.io | vpcs | get, create, delete | `ensureVPC`, `deleteVPC` |
-| kubeovn.io | subnets | get, create, delete | `ensureSubnet`, `deleteSubnet`, `ready`(외부 Subnet get), `ensureUnderlay`. list는 쓰지 않는다 |
-| kubeovn.io | security-groups | get, create, update, delete | `ensureGroup`, `ensureRule`/`deleteRule`(update), `deleteGroup` |
-| kubeovn.io | ovn-eips | get, create, delete | `ensureElasticIP`, `deleteElasticIP`, SNAT 주소 |
-| kubeovn.io | ovn-fips | get, **list**, create, delete | `ensureNAT`, `deleteNAT`. list는 `deleteElasticIP`가 그 주소를 쓰는 OvnFip이 남았는지 본다 |
+| kubeovn.io | subnets | get, create, delete | `ensureSubnet`, `deleteSubnet`, `ready` (get of the external Subnet), `ensureUnderlay`. list is not used |
+| kubeovn.io | security-groups | get, create, update, delete | `ensureGroup`, `ensureRule`/`deleteRule` (update), `deleteGroup` |
+| kubeovn.io | ovn-eips | get, create, delete | `ensureElasticIP`, `deleteElasticIP`, SNAT addresses |
+| kubeovn.io | ovn-fips | get, **list**, create, delete | `ensureNAT`, `deleteNAT`. list lets `deleteElasticIP` see whether an OvnFip using that address is left |
 | kubeovn.io | ovn-snat-rules | get, create, delete | `ensureSNAT`, `deleteSNAT` |
-| kubeovn.io | provider-networks, vlans | get, create | `ensureUnderlay`(시작 때, 지우지 않음), `ready`(provider-networks get) |
-| "" (core) | nodes | get, patch | `(*kubeOVN).labelGatewayNodes`, `-kube-gateway-nodes`일 때만(아래) |
+| kubeovn.io | provider-networks, vlans | get, create | `ensureUnderlay` (at start, never deleted), `ready` (provider-networks get) |
+| "" (core) | nodes | get, patch | `(*kubeOVN).labelGatewayNodes`, only with `-kube-gateway-nodes` (below) |
 
-모든 delete는 먼저 get으로 id annotation과 UID를 읽는다(`removeObject`). 그래서 delete가 있는 resource에는 get이 반드시 있다.
+Every delete first reads the id annotation and UID with a get (`removeObject`), so every resource with delete also has get.
 
-## direct NAD Role (`-kube-direct-nad-namespace`, VM 네임스페이스)
+## Direct NAD Role (`-kube-direct-nad-namespace`, the VM namespace)
 
-| apiGroup | resource | verbs | 쓰는 곳 |
+| apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
-| k8s.cni.cncf.io | network-attachment-definitions | get, create | `ensureDirect`(시작 때 `vws-direct-<name>`, 지우지 않음) |
+| k8s.cni.cncf.io | network-attachment-definitions | get, create | `ensureDirect` (`vws-direct-<name>` at start, never deleted) |
 
-`-kube-direct-networks`를 줄 때만 필요하다.
+Needed only when `-kube-direct-networks` is given.
 
-## VMI 읽기 Role (`-kube-vm-namespace`, VM 네임스페이스)
+## VMI read Role (`-kube-vm-namespace`, the VM namespace)
 
-| apiGroup | resource | verbs | 쓰는 곳 |
+| apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
-| kubevirt.io | virtualmachineinstances | get, list, watch | `(*kubeOVN).interfaceAddress`. 주소가 `spec.association`(instance, device)으로 붙으면 VMI `<instance id>`의 `status.interfaces[]`에서 `interfaceName`(없으면 `name`)이 device인 항목의 `ipAddress`를 읽어 OvnFip을 만든다. 이름이 안 맞으면 `pickVMIInterface`가 하나뿐인 인터페이스나(nic0이고 여럿이면) pod 네트워크 인터페이스를 고른다(#95). list/watch는 `(*Service).vmiLoop`가 VM 네임스페이스 VMI를 지켜보다 연결된 인터페이스의 IP가 바뀌면 저장된 Private와 OvnFip을 새 IP로 옮기는 데 쓴다(#86) |
+| kubevirt.io | virtualmachineinstances | get, list, watch | `(*kubeOVN).interfaceAddress`. When an address is attached with `spec.association` (instance, device), it reads the `ipAddress` of the entry in `status.interfaces[]` of VMI `<instance id>` whose `interfaceName` (else `name`) is the device, and creates the OvnFip. If no name matches, `pickVMIInterface` picks the only interface, or (nic0 with several) the pod network interface (#95). list/watch are used by `(*Service).vmiLoop`, which watches the VMIs in the VM namespace and, when the IP of an associated interface changes, moves the stored Private and the OvnFip to the new IP (#86) |
 
-- VMI가 없거나 IP가 아직 없으면 연산을 실패시키지 않고 계속 재시도한다(`errInterfaceNotReady`). 권한이 없으면(Forbidden) 보통 오류처럼 재시도하다 실패한다.
-- 연결을 풀거나 바꾸면 그 주소의 OvnFip을 지운다.
-- VMI IP가 잠깐 비면(재시작 중) 아무것도 바꾸지 않고, 새 IP가 보고되면 새 OvnFip을 만들고 옛 것을 지운다. 연결되지 않은 VMI는 무시한다. watch가 끊기면 1초 뒤, 그렇지 않아도 5분마다 다시 list한다.
+- If the VMI is missing or has no IP yet, the operation does not fail and keeps retrying (`errInterfaceNotReady`). Without permission (Forbidden) it retries like an ordinary error and then fails.
+- Removing or changing the association deletes that address's OvnFip.
+- If the VMI IP is briefly empty (during a restart), nothing changes; when a new IP is reported, a new OvnFip is created and the old one deleted. Unassociated VMIs are ignored. When the watch breaks it lists again after 1 second, and otherwise every 5 minutes.
 
-## 게이트웨이 노드 라벨 (`-kube-gateway-nodes`)
+## Gateway node label (`-kube-gateway-nodes`)
 
-- `-kube-gateway-nodes`를 주면 VPC가 하나라도 있는 동안 `-kube-gateway-recheck`(기본 5s)마다 그 노드들을 get하고, `ovn.kubernetes.io/external-gw`가 `true`가 아니면 merge patch로 `true`를 붙인다. kube-ovn-controller가 재시작하면 이 라벨을 `false`로 바꿔 SNAT이 깨진다. `ovn-external-gw-config` ConfigMap으로 고정하면 underlay가 깨져서 이 방식을 쓴다.
-- 목록에 없는 노드는 읽지도 바꾸지도 않는다. 라벨을 지우지 않는다. list와 watch는 필요 없다.
-- nodes는 클러스터 범위라 ClusterRole이 필요하다. RBAC은 노드 이름으로 좁힐 수 있다(`resourceNames`). 차트는 vws-platform이 고친다.
+- With `-kube-gateway-nodes`, while at least one VPC exists, it gets those nodes every `-kube-gateway-recheck` (default 5s) and, if `ovn.kubernetes.io/external-gw` is not `true`, adds `true` with a merge patch. A kube-ovn-controller restart sets this label to `false`, which breaks SNAT. Pinning it with the `ovn-external-gw-config` ConfigMap breaks the underlay, so this approach is used.
+- Nodes not on the list are neither read nor changed. The label is never removed. list and watch are not needed.
+- nodes are cluster-scoped, so a ClusterRole is needed. RBAC can narrow it by node name (`resourceNames`). vws-platform changes the chart.
 
-## 테넌트 subnet NAD Role (`-kube-nad-namespace`)
+## Tenant subnet NAD Role (`-kube-nad-namespace`)
 
-direct NAD는 여기가 아니라 위의 `-kube-direct-nad-namespace` Role이다.
+Direct NADs are not here but under the `-kube-direct-nad-namespace` Role above.
 
-| apiGroup | resource | verbs | 쓰는 곳 |
+| apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
 | k8s.cni.cncf.io | network-attachment-definitions | get, create, delete | `ensureNAD`, `removeNAD` |
 
-## subnets list와 vpc-nat-gateways (vws-test 45b, 45c)
+## subnets list and vpc-nat-gateways (vws-test 45b, 45c)
 
-전 릴리스의 `-kube-snat`은 VPC마다 VpcNatGateway를 두고, 그 서브넷을 지울 때 같은 VPC의 남은 서브넷을 list해서 게이트웨이를 옮겼다. 그래서 subnets `list`가 없으면 DeleteSubnet이 재시도만 했다(45b, 45c). `-kube-snat`이 OVN 네이티브 SNAT(OvnEip + OvnSnatRule)만 쓰게 되면서 두 권한 모두 필요 없다. `TestEnvtestDeleteSubnetWithoutSubnetList`가 list 없는 이 표의 권한으로 SNAT 서브넷을 지운다. 이전 릴리스가 만든 VpcNatGateway는 운영자가 지운다(`docs/kube-ovn-conflict-recovery.md`). 차트에 이미 더한 subnets `list`와 vpc-nat-gateways는 빼도 된다.
+In the previous release, `-kube-snat` kept a VpcNatGateway per VPC and, when deleting its subnet, listed the remaining subnets of the same VPC to move the gateway. So without subnets `list`, DeleteSubnet only retried (45b, 45c). Now that `-kube-snat` uses only OVN-native SNAT (OvnEip + OvnSnatRule), neither permission is needed. `TestEnvtestDeleteSubnetWithoutSubnetList` deletes a SNAT subnet with this table's permissions, without list. VpcNatGateways made by the previous release are deleted by the operator (`docs/kube-ovn-conflict-recovery.md`). subnets `list` and vpc-nat-gateways already added to the chart can be removed.

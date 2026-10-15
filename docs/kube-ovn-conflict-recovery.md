@@ -1,60 +1,60 @@
-# Kube-OVN 충돌 복구 절차
+# Kube-OVN conflict recovery
 
-Kube-OVN 데이터플레인이 이름이 같은 기존 객체를 만나 `domain.Conflict`를 돌려줬을 때의 운영 절차다. 아래 내용은 `internal/network/dataplane_kubeovn.go`의 `ensureObject`, `remove`, `removeObject`, `deleteSubnet`과 `internal/network/service.go`의 `failOrRetry`, `internal/domain/state.go`의 `Fail`, `Plan`을 읽고 적었다. 실제 Kube-OVN 클러스터에서 따라 해 본 절차가 아니다. 미검증이다.
+The operating procedure for when the Kube-OVN dataplane meets an existing object with the same name and returns `domain.Conflict`. It was written by reading `ensureObject`, `remove`, `removeObject` and `deleteSubnet` in `internal/network/dataplane_kubeovn.go`, `failOrRetry` in `internal/network/service.go`, and `Fail` and `Plan` in `internal/domain/state.go`. It has not been followed on a real Kube-OVN cluster. Not verified.
 
-## 언제 충돌이 나는가
+## When a conflict happens
 
-객체 이름은 리소스 id이고 id는 `vpc-`, `subnet-` 같은 접두사 뒤에 무작위 8바이트 16진수가 붙는다. 같은 이름의 객체를 사람이 미리 만들었을 때만 충돌한다. 대상은 Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule, NetworkAttachmentDefinition이다.
+The object name is the resource id, and an id is a prefix such as `vpc-` or `subnet-` followed by 8 random bytes in hex. A conflict happens only when someone created an object with the same name beforehand. The affected kinds are Vpc, Subnet, SecurityGroup, OvnEip, OvnSnatRule and NetworkAttachmentDefinition.
 
-`ensureObject`는 먼저 생성을 시도하고, 이미 있으면 그 객체를 읽어 아래 순서로 검사한다.
+`ensureObject` tries to create first; if the object already exists, it reads it and checks in this order:
 
-1. 삭제 중(`deletionTimestamp`가 있음)이면 일반 오류를 돌려주고 연산은 재시도된다. 충돌이 아니다.
-2. annotation `vws.popododo0720.io/id`가 없거나 id와 다르면 `domain.Conflict`다.
-3. 우리가 쓰는 spec 필드 중 하나라도 원하는 값과 다르면 `domain.Conflict`다. 보안 그룹의 규칙 목록과 NAT 게이트웨이의 호스트 서브넷은 비교하지 않는다.
+1. Being deleted (`deletionTimestamp` set): it returns an ordinary error and the operation is retried. This is not a conflict.
+2. The annotation `vws.popododo0720.io/id` is missing or differs from the id: `domain.Conflict`.
+3. Any spec field we write differs from the desired value: `domain.Conflict`. The rule lists of security groups and the host subnet of NAT gateways are not compared.
 
-재부팅이나 재시작은 충돌의 원인이 아니다. 재시작은 `RUNNING` 연산을 `PENDING`으로 되돌리고(`repository.requeue`), 다시 도는 ensure는 우리가 만든 객체(id annotation과 spec이 같음)를 정상으로 본다. 충돌은 이름이 같은 다른 객체가 있거나 사람이 우리 객체의 annotation이나 spec을 바꿨을 때만 난다.
+A reboot or restart does not cause conflicts. A restart returns `RUNNING` operations to `PENDING` (`repository.requeue`), and the ensure that runs again treats objects we made (same id annotation and spec) as fine. A conflict happens only when another object with the same name exists or someone changed the annotation or spec of our object.
 
-## 충돌이 나면 코드가 하는 일
+## What the code does on a conflict
 
-`failOrRetry`는 `domain.Invalid`와 `domain.Conflict`를 재시도하지 않고 연산을 바로 `FAILED`로 끝낸다. 오류 메시지는 객체 종류, 이름, 기대한 값과 실제 값을 담는다. gRPC로는 `AlreadyExists`(`ALREADY_EXISTS`)로 보인다.
+`failOrRetry` does not retry `domain.Invalid` and `domain.Conflict`; it ends the operation as `FAILED` at once. The error message carries the object kind, name, expected value and actual value. Over gRPC it shows as `AlreadyExists` (`ALREADY_EXISTS`).
 
-리소스 상태는 연산 종류에 따라 갈린다.
+The resource state depends on the operation kind:
 
-- 만들던 중(`PENDING`)이던 리소스는 `FAILED`가 된다. `Plan`은 `FAILED` 리소스에 ensure를 만들지 않고 `FAILED` 부모 아래의 자식도 막는다. 같은 id로 다시 수렴하는 길이 없다.
-- 이미 있던 리소스의 수정 중 충돌이면 리소스는 그대로이고 연산만 `FAILED`다.
+- A resource being created (`PENDING`) becomes `FAILED`. `Plan` makes no ensure for a `FAILED` resource and also blocks children under a `FAILED` parent. There is no way to converge the same id again.
+- On a conflict while updating an existing resource, the resource stays as it is and only the operation is `FAILED`.
 
-## 복구
+## Recovery
 
-### 수정 연산이 충돌한 경우
+### An update operation conflicted
 
-1. 오류 메시지가 가리키는 객체를 `kubectl get <kind> <이름> -o yaml`로 본다.
-2. annotation이 빠졌으면 `kubectl annotate <kind> <이름> vws.popododo0720.io/id=<이름>`으로 되돌린다. spec이 달라졌으면 메시지의 기대 값으로 되돌린다.
-3. 같은 수정을 새 `idempotency_key`로 다시 보낸다. 같은 키는 원래 연산을 그대로 돌려주므로 효과가 없다.
+1. Look at the object the error message names with `kubectl get <kind> <name> -o yaml`.
+2. If the annotation is missing, restore it with `kubectl annotate <kind> <name> vws.popododo0720.io/id=<name>`. If the spec changed, restore the expected value from the message.
+3. Send the same update again with a new `idempotency_key`. The same key just returns the original operation and has no effect.
 
-### 생성 연산이 충돌해 리소스가 `FAILED`인 경우
+### A create operation conflicted and the resource is `FAILED`
 
-코드가 지원하는 복구는 `FAILED` 리소스를 삭제하고 새 id로 다시 만드는 것뿐이다.
+The only recovery the code supports is deleting the `FAILED` resource and creating it again with a new id.
 
-`remove`와 `removeObject`는 객체를 읽어 annotation `vws.popododo0720.io/id`가 리소스 id와 같을 때만 지운다. annotation이 없거나 다르면 `domain.Conflict`로 거절하고 아무것도 지우지 않는다. 지울 때는 읽은 객체의 UID를 삭제 조건으로 걸어서, 읽은 뒤 같은 이름으로 바뀐 객체는 지우지 않는다. 객체가 없으면 성공이다. 그래서 `FAILED` 리소스의 삭제는 이름이 같은 사람 객체를 지우지 않는다. 대신 그 삭제 연산이 `Conflict`로 `FAILED`가 된다.
+`remove` and `removeObject` read the object and delete it only when the annotation `vws.popododo0720.io/id` equals the resource id. If the annotation is missing or different, they refuse with `domain.Conflict` and delete nothing. The delete carries the UID of the object read as a precondition, so an object replaced under the same name after the read is not deleted. A missing object is success. So deleting a `FAILED` resource never deletes someone's object of the same name; instead that delete operation ends `FAILED` with `Conflict`.
 
-삭제 연산이 실패해도 리소스는 `DELETING`에 남는다. `FailKind`는 `PENDING` 리소스만 `FAILED`로 바꾸기 때문이다. 서브넷 삭제는 SNAT 규칙, SNAT 주소, 그 서브넷이 둔 NAT 게이트웨이, Subnet, NAD 순으로 지우므로, 뒤 단계에서 충돌하면 앞 단계에서 지운 우리 객체는 이미 없다.
+Even when the delete operation fails, the resource stays `DELETING`, because `FailKind` turns only `PENDING` resources into `FAILED`. A subnet delete removes the SNAT rule, the SNAT address, the NAT gateway that subnet hosted, the Subnet and the NAD in that order, so if a later step conflicts, our objects from the earlier steps are already gone.
 
-1. 오류 메시지가 가리키는 객체를 `kubectl get <kind> <이름> -o yaml`로 본다.
-2. 그 객체가 필요하면 내용을 백업하고 다른 이름으로 다시 만든다. 객체 이름은 바꿀 수 없다. 그다음 원래 이름의 객체를 `kubectl delete`로 지운다. 필요 없으면 바로 지운다. 코드는 이 객체를 지우지 않으므로 사람이 지워야 한다.
-3. 같은 삭제를 새 `idempotency_key`로 다시 보낸다. 객체가 없으므로 삭제가 끝난다. 의존 리소스(서브넷, 주소 등)가 있으면 삭제가 먼저 거절된다.
-4. 삭제가 끝나면 새 `CreateXxx` 요청을 보내 새 id를 받는다.
+1. Look at the object the error message names with `kubectl get <kind> <name> -o yaml`.
+2. If the object is needed, back up its content and create it again under another name (object names cannot be changed). Then delete the object with the original name with `kubectl delete`. If it is not needed, delete it right away. The code does not delete this object, so a person has to.
+3. Send the same delete again with a new `idempotency_key`. The object is gone, so the delete finishes. If dependent resources (subnets, addresses and so on) exist, the delete is refused first.
+4. When the delete is done, send a new `CreateXxx` request to get a new id.
 
-## 코드가 지원하지 않는 것
+## What the code does not support
 
-- 자동 adopt는 없다. annotation이 없는 객체를 우리 것으로 가져오지 않는다. 사람이 annotation을 붙여도 이미 `FAILED`가 된 생성은 되살아나지 않는다.
-- `FAILED` 리소스를 다시 수렴시키는 재시도 RPC는 없다.
-- 충돌한 객체를 우리 spec으로 덮어쓰지 않는다. 생성은 덮어쓰지 않고 기존 객체는 읽기만 한다.
-- id annotation이 없거나 다른 객체를 대신 지우거나 옮기는 기능은 없다. 사람이 `kubectl`로 정리해야 한다.
+- There is no automatic adopt. An object without the annotation is never taken over as ours. Even if someone adds the annotation, a create that is already `FAILED` does not come back.
+- There is no retry RPC that converges a `FAILED` resource again.
+- A conflicting object is not overwritten with our spec. Create does not overwrite, and existing objects are only read.
+- Nothing deletes or moves, on your behalf, an object whose id annotation is missing or different. A person must clean it up with `kubectl`.
 
-## v4ip로 만든 OvnEip (vws-test 38, 38b)
+## OvnEips created with v4ip (vws-test 38, 38b)
 
-이 수정 전 vws-network는 OvnEip에 `spec.v4ip`(소문자)를 썼다. Kube-OVN v1.16.12 CRD 필드는 `v4Ip`라서 API 서버가 그 필드를 버렸고, Kube-OVN이 외부 Subnet에서 다른 주소를 골랐다(API는 10.78.0.225, 실제 OvnEip는 10.78.0.201). 수정 뒤 같은 OvnEip를 다시 ensure하면 `spec.v4Ip`가 달라 `domain.Conflict`가 난다. 덮어쓰지 않는다. 그 주소에 OvnFip가 없으면 OvnEip를 지우고 연산을 다시 돌린다. OvnFip가 있으면 먼저 OvnFip를 지운다.
+Before this fix, vws-network wrote `spec.v4ip` (lower case) to OvnEips. The Kube-OVN v1.16.12 CRD field is `v4Ip`, so the API server dropped the field and Kube-OVN picked another address in the external Subnet (the API said 10.78.0.225, the actual OvnEip was 10.78.0.201). After the fix, ensuring the same OvnEip again gives `domain.Conflict` because `spec.v4Ip` differs. It is not overwritten. If the address has no OvnFip, delete the OvnEip and run the operation again. If it has an OvnFip, delete the OvnFip first.
 
-## 이전 릴리스가 만든 VpcNatGateway
+## VpcNatGateways created by the previous release
 
-`-kube-snat`은 이제 OVN 네이티브 SNAT(OvnEip + OvnSnatRule)만 쓴다. 이전 릴리스는 VPC마다 iptables `VpcNatGateway` `nat-<vpc id>`를 만들었고, 그 파드는 kube-system에 외부 Subnet 이름의 NAD가 없어 뜨지 못했다(vws-test 40, 41). 서비스는 그 객체를 지우지 않는다. 운영자가 id annotation(`vws.popododo0720.io/id: nat-<vpc id>`)을 확인하고 `kubectl delete vpc-nat-gateway nat-<vpc id>`로 지운다.
+`-kube-snat` now uses only OVN-native SNAT (OvnEip + OvnSnatRule). The previous release created an iptables `VpcNatGateway` `nat-<vpc id>` per VPC, and its pod could not start because kube-system had no NAD named after the external Subnet (vws-test 40, 41). The service does not delete these objects. The operator checks the id annotation (`vws.popododo0720.io/id: nat-<vpc id>`) and deletes it with `kubectl delete vpc-nat-gateway nat-<vpc id>`.
