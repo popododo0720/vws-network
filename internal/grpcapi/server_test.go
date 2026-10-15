@@ -680,6 +680,98 @@ func TestFailedDataplaneOperationError(t *testing.T) {
 	}
 }
 
+func TestSubnetZoneRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "net.db")
+	svc, err := network.Open(ctx, network.Config{
+		DatabasePath: path,
+		AddressPool:  netip.MustParsePrefix("198.51.100.0/24"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := serve(t, svc)
+	vpcs := networkv1.NewVpcServiceClient(conn)
+	subs := networkv1.NewSubnetServiceClient(conn)
+	ops := longrunningpb.NewOperationsClient(conn)
+	parent := "projects/proj/regions/r1"
+	if _, err := vpcs.CreateVpc(ctx, &networkv1.CreateVpcRequest{
+		Parent: parent, VpcId: "app",
+		Vpc: &networkv1.Vpc{Spec: &networkv1.VpcSpec{Ipv4Cidr: "10.80.0.0/16"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := subs.CreateSubnet(ctx, &networkv1.CreateSubnetRequest{
+		Parent: parent + "/vpcs/app", SubnetId: "bad",
+		Subnet: &networkv1.Subnet{Spec: &networkv1.SubnetSpec{Zone: "Bad_Zone", Ipv4Cidr: "10.80.2.0/24"}},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("bad zone code = %s err %v", status.Code(err), err)
+	}
+	key := "11111111-1111-4111-8111-111111111111"
+	op, err := subs.CreateSubnet(ctx, &networkv1.CreateSubnetRequest{
+		Parent: parent + "/vpcs/app", SubnetId: "web", RequestId: key,
+		Subnet: &networkv1.Subnet{Spec: &networkv1.SubnetSpec{Zone: "vws-1a", Ipv4Cidr: "10.80.1.0/24"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := subs.CreateSubnet(ctx, &networkv1.CreateSubnetRequest{
+		Parent: parent + "/vpcs/app", SubnetId: "web", RequestId: key,
+		Subnet: &networkv1.Subnet{Spec: &networkv1.SubnetSpec{Zone: "vws-1a", Ipv4Cidr: "10.80.1.0/24"}},
+	})
+	if err != nil || replay.GetName() != op.GetName() {
+		t.Fatalf("replay %+v err %v", replay, err)
+	}
+	waitDone(t, ctx, ops, op.GetName())
+	done, err := ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: op.GetName()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created networkv1.Subnet
+	if err := done.GetResponse().UnmarshalTo(&created); err != nil {
+		t.Fatalf("create response: %v", err)
+	}
+	if created.GetSpec().GetZone() != "vws-1a" {
+		t.Fatalf("create zone = %q", created.GetSpec().GetZone())
+	}
+	got, err := subs.GetSubnet(ctx, &networkv1.GetSubnetRequest{Name: parent + "/vpcs/app/subnets/web"})
+	if err != nil || got.GetSpec().GetZone() != "vws-1a" {
+		t.Fatalf("get zone = %q err %v", got.GetSpec().GetZone(), err)
+	}
+	page, err := subs.ListSubnets(ctx, &networkv1.ListSubnetsRequest{Parent: parent + "/vpcs/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed string
+	for _, sub := range page.GetSubnets() {
+		if sub.GetName() == parent+"/vpcs/app/subnets/bad" {
+			t.Fatalf("rejected subnet was stored: %+v", sub)
+		}
+		if sub.GetName() == parent+"/vpcs/app/subnets/web" {
+			listed = sub.GetSpec().GetZone()
+		}
+	}
+	if listed != "vws-1a" {
+		t.Fatalf("list zone = %q", listed)
+	}
+	closeOrFail(t, conn.Close)
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = network.Open(ctx, network.Config{DatabasePath: path, AddressPool: netip.MustParsePrefix("198.51.100.0/24")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeOrFail(t, svc.Close)
+	conn = serve(t, svc)
+	defer closeOrFail(t, conn.Close)
+	subs = networkv1.NewSubnetServiceClient(conn)
+	got, err = subs.GetSubnet(ctx, &networkv1.GetSubnetRequest{Name: parent + "/vpcs/app/subnets/web"})
+	if err != nil || got.GetSpec().GetZone() != "vws-1a" {
+		t.Fatalf("reopened zone = %q err %v", got.GetSpec().GetZone(), err)
+	}
+}
+
 func TestDirectSubnetNamedInTheAskedRegion(t *testing.T) {
 	sub := toSubnet("p", inRegion(domain.Subnet{ID: "subnet-direct-prod", VPC: network.DirectVPC, CIDR: netip.MustParsePrefix("192.168.200.0/24")}, "kr1"))
 	if sub.GetName() != "projects/p/regions/kr1/vpcs/vpc-direct/subnets/subnet-direct-prod" {
