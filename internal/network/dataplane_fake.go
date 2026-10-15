@@ -48,39 +48,50 @@ func (f *fakeDataplane) drop(key string) { delete(f.objects, key) }
 func (f *fakeDataplane) ensureVPC(_ context.Context, v domain.VPC) error {
 	return f.call("ensure-vpc/"+string(v.ID), func() { f.put("vpc/" + string(v.ID)) })
 }
+
 func (f *fakeDataplane) deleteVPC(_ context.Context, v domain.VPC) error {
 	return f.call("delete-vpc/"+string(v.ID), func() { f.drop("vpc/" + string(v.ID)) })
 }
+
 func (f *fakeDataplane) ensureSubnet(_ context.Context, s domain.Subnet) error {
 	return f.call("ensure-subnet/"+string(s.ID), func() { f.put("subnet/" + string(s.ID)) })
 }
+
 func (f *fakeDataplane) deleteSubnet(_ context.Context, s domain.Subnet) error {
 	return f.call("delete-subnet/"+string(s.ID), func() { f.drop("subnet/" + string(s.ID)) })
 }
+
 func (f *fakeDataplane) ensureGroup(_ context.Context, g domain.SecurityGroup) error {
 	return f.call("ensure-sg/"+string(g.ID), func() { f.put("sg/" + string(g.ID)) })
 }
+
 func (f *fakeDataplane) deleteGroup(_ context.Context, g domain.SecurityGroup) error {
 	return f.call("delete-sg/"+string(g.ID), func() { f.drop("sg/" + string(g.ID)) })
 }
+
 func (f *fakeDataplane) ensureRule(_ context.Context, g domain.SecurityGroupID, r domain.Rule) error {
 	key := "rule/" + string(g) + "/" + r.Identity()
 	return f.call("ensure-"+key, func() { f.put(key) })
 }
+
 func (f *fakeDataplane) deleteRule(_ context.Context, g domain.SecurityGroupID, r domain.Rule) error {
 	key := "rule/" + string(g) + "/" + r.Identity()
 	return f.call("delete-"+key, func() { f.drop(key) })
 }
+
 func (f *fakeDataplane) ensureElasticIP(_ context.Context, e domain.ElasticIP) error {
 	return f.call("ensure-eip/"+string(e.ID), func() { f.put("eip/" + string(e.ID)) })
 }
+
 func (f *fakeDataplane) deleteElasticIP(_ context.Context, e domain.ElasticIP) error {
 	return f.call("delete-eip/"+string(e.ID), func() { f.drop("eip/" + string(e.ID)) })
 }
+
 func (f *fakeDataplane) ensureNAT(_ context.Context, e domain.ElasticIP, private netip.Addr) error {
 	key := "nat/" + string(e.ID) + "/" + private.String()
 	return f.call("ensure-"+key, func() { f.put(key) })
 }
+
 func (f *fakeDataplane) deleteNAT(_ context.Context, e domain.ElasticIP, private netip.Addr) error {
 	key := "nat/" + string(e.ID) + "/" + private.String()
 	return f.call("delete-"+key, func() { f.drop(key) })
