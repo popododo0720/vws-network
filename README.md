@@ -1,56 +1,56 @@
 # vws-network
 
-VWS 네트워크 제어 서비스다. 프로젝트 단위로 VPC, 서브넷, 보안 그룹, 엘라스틱 IP의 원하는 상태를 저장하고, 데이터플레인에 닿는 일은 연산으로 끝낸다.
+The VWS network control service. It stores the desired state of VPCs, subnets, security groups and elastic IPs per project, and finishes anything that touches the dataplane as an operation.
 
-## 실행
+## Run
 
 ```sh
 go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 ```
 
-`-listen`의 기본값은 `127.0.0.1:8080`이다.
+`-listen` defaults to `127.0.0.1:8080`.
 
-`-kubeconfig`(또는 인클러스터 ServiceAccount)로 Kube-OVN을 고르면, 시작할 때 API 서버에 닿지 못하면 서비스는 뜨지 않고 종료 코드 1로 끝난다. 오류는 `kube-ovn start checks need the API server, so vws-network does not start: ...`다. 이유는 서빙 전에 해야 하는 일이 모두 API 서버를 쓰기 때문이다.
+When Kube-OVN is selected with `-kubeconfig` (or the in-cluster ServiceAccount) and the API server cannot be reached at start, the service does not come up and exits with code 1. The error is `kube-ovn start checks need the API server, so vws-network does not start: ...`. The reason is that everything that must happen before serving uses the API server:
 
-- underlay 플래그가 없으면 `-pool`이 운영자가 만든 외부 Subnet의 `cidrBlock` 안에 있는지 확인한다. 확인하지 않고 뜨면 Kube-OVN이 라우팅하지 못하는 엘라스틱 IP를 내줄 수 있다(#52).
-- 주소를 `spec.association`(instance, device)으로 붙이면 `-kube-vm-namespace`의 VMI에서 그 인터페이스 IP를 읽어 OvnFip을 만들고, 연결을 풀면 지운다. VMI가 IP를 받을 때까지 연산은 pending으로 재시도한다(`docs/rbac.md`). VMI의 IP가 바뀌면 VMI watch가 저장된 Private와 OvnFip을 새 IP로 옮긴다.
-- VPC subnet의 VM MTU는 `-vm-mtu`(기본 9001, 68–9001)다. Subnet `spec.mtu`와 DHCP 옵션으로 내려간다. 1500 외부 경로는 `docs/mtu.md`.
-- underlay와 `-kube-direct-networks`가 있으면 그 ProviderNetwork, Vlan, Subnet, NAD를 만든다. 없이 뜨면 API가 존재하지 않는 direct subnet을 보여 준다.
+- Without underlay flags, it checks that `-pool` is inside the `cidrBlock` of the external Subnet the operator created. Coming up without that check could hand out elastic IPs Kube-OVN cannot route (#52).
+- When an address is attached with `spec.association` (instance, device), it reads that interface's IP from the VMI in `-kube-vm-namespace` and creates an OvnFip, and deletes it when the association is removed. The operation stays pending and retries until the VMI gets an IP (`docs/rbac.md`). When the VMI's IP changes, the VMI watch moves the stored Private and the OvnFip to the new IP.
+- The VM MTU of VPC subnets is `-vm-mtu` (default 9001, 68–9001). It goes down as the Subnet `spec.mtu` and the DHCP options. The 1500 external path is in `docs/mtu.md`.
+- With an underlay and `-kube-direct-networks`, it creates their ProviderNetwork, Vlan, Subnet and NAD. Coming up without them would make the API show direct subnets that do not exist.
 
-전에는 시작한 뒤 `/readyz`만 실패했다. 지금은 배포가 재시작으로 다시 시도하면 된다. 값이 틀린 경우(`domain.Invalid`, `domain.Conflict`)는 그 오류를 그대로 낸다. 자세한 내용은 `docs/underlay.md`에 있다.
+Before, only `/readyz` failed after start. Now the deployment just retries by restarting. A wrong value (`domain.Invalid`, `domain.Conflict`) returns that error as is. Details are in `docs/underlay.md`.
 
-## 테스트
+## Test
 
 ```sh
 go test ./...
 ```
 
-## 동작
+## Behaviour
 
-같은 프로젝트 안에서 VPC CIDR은 서로 겹칠 수 없다. 서브넷 CIDR은 그 VPC 안에 있어야 하고, 같은 VPC의 다른 서브넷과 겹칠 수 없다. 다른 프로젝트와는 겹쳐도 된다.
+Within one project, VPC CIDRs cannot overlap. A subnet CIDR must be inside its VPC and cannot overlap other subnets of the same VPC. Overlap with other projects is fine.
 
-변경 RPC는 `idempotency_key`가 필요하다. 같은 프로젝트, 같은 키, 같은 요청은 원래 연산을 돌려준다. 키가 같은데 요청이 다르면 거절한다. 검증에 실패한 요청은 연산도 키도 남기지 않는다.
+Mutating RPCs need an `idempotency_key`. The same project, key and request return the original operation. The same key with a different request is refused. A request that fails validation leaves neither an operation nor a key.
 
-연산이 `SUCCEEDED`가 되면 가짜 데이터플레인이 그 리소스의 원하는 상태와 같다. 프로세스가 다시 뜨면 `RUNNING`으로 남아 있던 연산을 `PENDING`으로 되돌리고 이어서 수렴시킨다.
+When an operation is `SUCCEEDED`, the fake dataplane matches that resource's desired state. When the process comes back up, operations left `RUNNING` go back to `PENDING` and converge from there.
 
-`third_party/vws-proto`는 `github.com/popododo0720/vws-proto`의 `main` `a1c6084`이다. `go.mod`의 replace가 그 경로를 가리킨다. vws-proto가 공개되면 replace를 제거하고 태그 버전을 require한다.
+`third_party/vws-proto` is `main` `a1c6084` of `github.com/popododo0720/vws-proto`. The replace in `go.mod` points at that path. Once vws-proto is public, the replace is removed and a tagged version is required.
 
-`third_party/vws-lib`는 `github.com/popododo0720/vws-lib`의 `v0.2.0`(`fe9cd29`)이다. `scripts/vendor-lib.sh vendor v0.2.0`으로 복사했고 replace로 쓴다. CI는 `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check`로 사본이 바뀌지 않았는지 본다. 사본은 고치지 않는다.
+`third_party/vws-lib` is commit `5b88ea9` of `github.com/popododo0720/vws-lib` (the English-docs branch; same Go code as `v0.2.0` `fe9cd29`). It was copied with `scripts/vendor-lib.sh vendor <commit>` and is used through a replace. CI checks with `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check` that the copy has not changed. Do not edit the copy.
 
-## 관측성
+## Observability
 
-`main`이 `obs.Setup`을 한 번 부르고 끝날 때 shutdown한다. 로그는 slog JSON이다. 메트릭은 `vws.rpc.server.*`, `vws.reconcile.total`·`vws.reconcile.duration`(데이터플레인 ensure 호출, `controller`=`network.<종류>`, `result`=`ok`·`conflict`·`error`), `vws.audit.events`(변경 RPC), `vws.panics`, `vws.errors`, `vws.queue.depth`(`queue`=`network.operations`, 끝나지 않은 연산 수), `vws.build.info`다. 메트릭은 OTLP로 내보내고 `/metrics` pull 엔드포인트는 없다(vws-lib에 Prometheus reader가 아직 없다). 레이블에 리소스 id나 요청 id는 넣지 않는다.
+`main` calls `obs.Setup` once and shuts it down at exit. Logs are slog JSON. Metrics are `vws.rpc.server.*`, `vws.reconcile.total` and `vws.reconcile.duration` (dataplane ensure calls, `controller`=`network.<kind>`, `result`=`ok`, `conflict` or `error`), `vws.audit.events` (mutating RPCs), `vws.panics`, `vws.errors`, `vws.queue.depth` (`queue`=`network.operations`, the number of unfinished operations) and `vws.build.info`. Metrics are exported over OTLP; there is no `/metrics` pull endpoint (vws-lib has no Prometheus reader yet). Labels never carry resource ids or request ids.
 
-이 서비스가 읽는 환경 변수:
+Environment variables this service reads:
 
-| 변수 | 뜻 |
+| Variable | Meaning |
 | --- | --- |
-| `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SDK_DISABLED` | 표준 OpenTelemetry 설정. `OTEL_EXPORTER_OTLP_ENDPOINT`가 비면 아무것도 내보내지 않는다. |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | `SENTRY_DSN`이 있을 때만 Sentry로 보낸다. |
-| `VWS_LOG_LEVEL` | `debug`, `info`(기본), `warn`, `error`. |
-| `VWS_LOG_FORMAT` | `json`(기본) 또는 `text`. |
-| `VWS_HEALTH_ADDR` | `/healthz`, `/readyz` 주소. 비면 열지 않는다. `/readyz`는 `(*Service).Ready`를 부르고, SIGTERM 뒤에는 실패한다. |
+| `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SDK_DISABLED` | Standard OpenTelemetry settings. With `OTEL_EXPORTER_OTLP_ENDPOINT` empty, nothing is exported. |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | Sends to Sentry only when `SENTRY_DSN` is set. |
+| `VWS_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`. |
+| `VWS_LOG_FORMAT` | `json` (default) or `text`. |
+| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`. Empty means not opened. `/readyz` calls `(*Service).Ready` and fails after SIGTERM. |
 
-gRPC health는 `docs/health.md`에 있다.
+gRPC health is described in `docs/health.md`.
 
-배포용 매니페스트는 두지 않는다.
+No deployment manifests are kept here.
