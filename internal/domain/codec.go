@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -231,4 +233,20 @@ func decodeRules(docs []ruleDoc) ([]Rule, error) {
 		}
 	}
 	return out, nil
+}
+
+// Etag hashes what a client can change on the group: description, labels and
+// rules. Rules are canonical, and JSON sorts label keys, so equal content gives
+// an equal etag. Status is left out so reconcile progress does not move it.
+func (g SecurityGroup) Etag() string {
+	b, err := json.Marshal(struct {
+		Description string            `json:"d"`
+		Labels      map[string]string `json:"l"`
+		Rules       []Rule            `json:"r"`
+	}{g.Description, g.Labels, g.Rules})
+	if err != nil {
+		panic(fmt.Sprintf("security group etag: %v", err))
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:16])
 }
