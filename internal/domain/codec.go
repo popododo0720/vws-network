@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"sort"
+	"strings"
 )
 
 // stateVersion is the document this process writes. Version 1 is the document
@@ -236,17 +238,23 @@ func decodeRules(docs []ruleDoc) ([]Rule, error) {
 }
 
 // Etag hashes what a client can change on the group: description, labels and
-// rules. Rules are canonical, and JSON sorts label keys, so equal content gives
-// an equal etag. Status is left out so reconcile progress does not move it.
+// rules. Rules are canonical and labels are hashed in key order, so equal
+// content gives an equal etag. Status is left out so reconcile progress does
+// not move it.
 func (g SecurityGroup) Etag() string {
-	b, err := json.Marshal(struct {
-		Description string            `json:"d"`
-		Labels      map[string]string `json:"l"`
-		Rules       []Rule            `json:"r"`
-	}{g.Description, g.Labels, g.Rules})
-	if err != nil {
-		panic(fmt.Sprintf("security group etag: %v", err))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q\n", g.Description)
+	keys := make([]string, 0, len(g.Labels))
+	for k := range g.Labels {
+		keys = append(keys, k)
 	}
-	sum := sha256.Sum256(b)
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "l %q=%q\n", k, g.Labels[k])
+	}
+	for _, r := range g.Rules {
+		fmt.Fprintf(&b, "r %d %d %d %d %s %q\n", r.Direction, r.Protocol, r.FromPort, r.ToPort, r.Peer.CIDR, r.Peer.Group)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
