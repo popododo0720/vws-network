@@ -27,14 +27,19 @@ var errDuplicateRule = errors.New("InvalidPermission.Duplicate")
 // for AuthorizeSecurityGroupIngress: read the group, refuse a rule that is
 // already there, write the union back with the etag it read, and start over
 // when the write is aborted.
-func authorizeRule(ctx context.Context, groups networkv1.SecurityGroupServiceClient, name string, rule *networkv1.SecurityGroupRule, ids *atomic.Uint64) error {
+func authorizeRule(
+	ctx context.Context, groups networkv1.SecurityGroupServiceClient, name string,
+	rule *networkv1.SecurityGroupRule, ids *atomic.Uint64,
+) error {
 	for {
 		got, err := groups.GetSecurityGroup(ctx, &networkv1.GetSecurityGroupRequest{Name: name})
 		if err != nil {
 			return err
 		}
 		for _, have := range got.GetSpec().GetRules() {
-			if have.GetProtocol() == rule.GetProtocol() && have.GetFromPort() == rule.GetFromPort() && have.GetToPort() == rule.GetToPort() && have.GetCidr() == rule.GetCidr() && have.GetDirection() == rule.GetDirection() {
+			if have.GetDirection() == rule.GetDirection() && have.GetProtocol() == rule.GetProtocol() &&
+				have.GetFromPort() == rule.GetFromPort() && have.GetToPort() == rule.GetToPort() &&
+				have.GetCidr() == rule.GetCidr() {
 				return errDuplicateRule
 			}
 		}
@@ -84,7 +89,9 @@ func TestConcurrentAuthorizeKeepsEveryRule(t *testing.T) {
 	}
 	op, err = groups.CreateSecurityGroup(ctx, &networkv1.CreateSecurityGroupRequest{
 		Parent: parent + "/vpcs/net", SecurityGroupId: "web",
-		SecurityGroup: &networkv1.SecurityGroup{Spec: &networkv1.SecurityGroupSpec{Rules: []*networkv1.SecurityGroupRule{rule(22)}}},
+		SecurityGroup: &networkv1.SecurityGroup{Spec: &networkv1.SecurityGroupSpec{
+			Rules: []*networkv1.SecurityGroupRule{rule(22)},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +124,8 @@ func TestConcurrentAuthorizeKeepsEveryRule(t *testing.T) {
 		}
 	}
 	if added != 1 {
-		t.Errorf("%d of %d writers of the same rule succeeded, want 1 and the rest InvalidPermission.Duplicate", added, dupWriters)
+		t.Errorf("%d of %d writers of the same rule succeeded, want 1 and the rest InvalidPermission.Duplicate",
+			added, dupWriters)
 	}
 	got, err := groups.GetSecurityGroup(ctx, &networkv1.GetSecurityGroupRequest{Name: name})
 	if err != nil {
@@ -187,20 +195,25 @@ func TestUpdateSecurityGroupRefusesStaleEtag(t *testing.T) {
 	mask := &fieldmaskpb.FieldMask{Paths: []string{"spec.description"}}
 	const key = "00000000-0000-4000-8000-000000000001"
 	first.Spec.Description = "v2"
-	done, err := groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{SecurityGroup: first, UpdateMask: mask, RequestId: key})
+	update := func(key string) (*longrunningpb.Operation, error) {
+		return groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{
+			SecurityGroup: first, UpdateMask: mask, RequestId: key,
+		})
+	}
+	done, err := update(key)
 	if err != nil {
 		t.Fatalf("update with the current etag: %v", err)
 	}
-	replay, err := groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{SecurityGroup: first, UpdateMask: mask, RequestId: key})
+	replay, err := update(key)
 	if err != nil || replay.GetName() != done.GetName() {
 		t.Fatalf("replay after the etag moved = %v %v, want the stored operation %s", replay.GetName(), err, done.GetName())
 	}
 	first.Spec.Description = "v3"
-	_, err = groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{SecurityGroup: first, UpdateMask: mask, RequestId: key})
+	_, err = update(key)
 	if status.Code(err) != codes.Aborted || reason(err) != "IDEMPOTENCY_CONFLICT" {
 		t.Fatalf("reused request_id with a different body = %v, want Aborted IDEMPOTENCY_CONFLICT", err)
 	}
-	_, err = groups.UpdateSecurityGroup(ctx, &networkv1.UpdateSecurityGroupRequest{SecurityGroup: first, UpdateMask: mask})
+	_, err = update("")
 	if status.Code(err) != codes.Aborted || reason(err) != "ETAG_MISMATCH" {
 		t.Fatalf("update with a stale etag = %v, want Aborted ETAG_MISMATCH", err)
 	}
@@ -209,7 +222,8 @@ func TestUpdateSecurityGroupRefusesStaleEtag(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.GetSpec().GetDescription() != "v2" || got.GetEtag() == first.GetEtag() {
-		t.Fatalf("after stale write: description %q etag %q (read %q)", got.GetSpec().GetDescription(), got.GetEtag(), first.GetEtag())
+		t.Fatalf("after stale write: description %q etag %q (read %q)",
+			got.GetSpec().GetDescription(), got.GetEtag(), first.GetEtag())
 	}
 }
 
