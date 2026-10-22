@@ -360,6 +360,9 @@ func (h *handler) CreateSecurityGroup(ctx context.Context, req *networkv1.Create
 	if err := parseRequestID(req.GetRequestId()); err != nil {
 		return nil, err
 	}
+	if err := rejectEtag(req.GetSecurityGroup().GetEtag()); err != nil {
+		return nil, err
+	}
 	rules, err := groupSpec(req.GetSecurityGroup(), parent.Project, parent.Region, parent.VPC)
 	if err != nil {
 		return nil, err
@@ -389,9 +392,6 @@ func (h *handler) UpdateSecurityGroup(ctx context.Context, req *networkv1.Update
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectEtag(req.GetSecurityGroup().GetEtag()); err != nil {
-		return nil, err
-	}
 	touch := maskSelects(req.GetUpdateMask(), "spec.rules")
 	var rules []domain.Rule
 	if touch {
@@ -403,6 +403,7 @@ func (h *handler) UpdateSecurityGroup(ctx context.Context, req *networkv1.Update
 	op, err := h.svc.UpdateSecurityGroup(ctx, callDry(n.Project, req.GetRequestId(), n.ID, req.GetValidateOnly()), domain.CreateSecurityGroup{
 		VPC: domain.VPCID(n.VPC), Name: n.ID, ID: domain.SecurityGroupID(n.ID), Region: n.Region,
 		Rules: rules, ReplaceRules: touch, AllowMissing: req.GetAllowMissing(), KeepRules: !touch,
+		Etag: req.GetSecurityGroup().GetEtag(),
 		Text: maskedText(req.GetUpdateMask(), req.GetSecurityGroup().GetSpec().GetDescription(), req.GetSecurityGroup().GetLabels()),
 	})
 	if err != nil {
@@ -706,9 +707,6 @@ func subnetSpec(s *networkv1.Subnet) (netip.Prefix, string, error) {
 func groupSpec(g *networkv1.SecurityGroup, project, region, vpc string) ([]domain.Rule, error) {
 	if g == nil || g.GetSpec() == nil {
 		return nil, invalidSpec("security group spec is required")
-	}
-	if err := rejectEtag(g.GetEtag()); err != nil {
-		return nil, err
 	}
 	return parseRules(g.GetSpec().GetRules(), project, region, vpc)
 }

@@ -498,6 +498,9 @@ func (s *Service) UpdateSecurityGroup(ctx context.Context, c domain.Call, r doma
 		if ok && otherName(g.Region, r.Region, g.VPC, r.VPC) {
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}
 		}
+		if r.Etag != "" && (!ok || g.Etag() != r.Etag) {
+			return false, &domain.Error{Kind: domain.Busy, Msg: domain.MsgEtagMismatch}
+		}
 		if !ok {
 			if !r.AllowMissing {
 				return false, &domain.Error{Kind: domain.NotFound, Msg: "security group not found"}

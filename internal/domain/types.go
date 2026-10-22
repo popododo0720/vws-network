@@ -211,6 +211,9 @@ type CreateSecurityGroup struct {
 	ReplaceRules bool `json:"-"`
 	// KeepRules leaves stored rules alone. It is part of the fingerprint.
 	KeepRules bool `json:"keep_rules,omitempty"`
+	// Etag, when set, must equal the stored group's Etag or the update is
+	// refused as Busy. Empty writes unconditionally.
+	Etag string `json:"etag,omitempty"`
 	Text
 }
 

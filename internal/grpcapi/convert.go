@@ -203,7 +203,7 @@ func callDry(project, requestID, resourceID string, dry bool) domain.Call {
 
 func rejectEtag(etag string) error {
 	if etag != "" {
-		return withInfo(codes.Aborted, "etag does not match", "ETAG_MISMATCH")
+		return withInfo(codes.Aborted, domain.MsgEtagMismatch, "ETAG_MISMATCH")
 	}
 	return nil
 }
@@ -437,6 +437,9 @@ func statusInfo(de *domain.Error, requestID string) (codes.Code, string) {
 	case domain.Dataplane:
 		return codes.Unavailable, "RECONCILIATION_FAILED"
 	case domain.Busy:
+		if de.Msg == domain.MsgEtagMismatch {
+			return codes.Aborted, "ETAG_MISMATCH"
+		}
 		return codes.Aborted, ""
 	case domain.Forbidden:
 		return codes.PermissionDenied, "PERMISSION_DENIED"
@@ -466,6 +469,7 @@ func toSubnet(project string, s domain.Subnet) *networkv1.Subnet {
 func toGroup(project string, g domain.SecurityGroup) *networkv1.SecurityGroup {
 	out := &networkv1.SecurityGroup{
 		Name:   groupName(project, g.Region, string(g.VPC), string(g.ID)),
+		Etag:   g.Etag(),
 		Labels: protoLabels(g.Labels),
 		Spec:   &networkv1.SecurityGroupSpec{Description: g.Description},
 		Status: &networkv1.SecurityGroupStatus{Observed: observed(g.Status)},

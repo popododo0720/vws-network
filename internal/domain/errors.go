@@ -23,6 +23,9 @@ const (
 	Forbidden
 )
 
+// MsgEtagMismatch is the Busy message for an update whose etag is stale.
+const MsgEtagMismatch = "etag does not match"
+
 // Error is the only error the service returns for a rejected call.
 type Error struct {
 	Kind ErrKind
