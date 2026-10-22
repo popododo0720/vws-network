@@ -98,7 +98,8 @@ func ruleField(d domain.Direction) string {
 }
 
 // ovnRule converts a domain rule to a Kube-OVN SecurityGroup rule.
-// Kube-OVN has no port 0 for tcp and udp, so such a rule is rejected.
+// Kube-OVN has no port 0 for tcp and udp and no field for an ICMP type or
+// code, so such a rule is rejected instead of widened.
 func ovnRule(r domain.Rule) (map[string]any, error) {
 	if err := domain.CheckRule(r); err != nil {
 		return nil, err
@@ -117,6 +118,9 @@ func ovnRule(r domain.Rule) (map[string]any, error) {
 		out["portRangeMin"] = int64(r.FromPort)
 		out["portRangeMax"] = int64(r.ToPort)
 	case domain.ICMP:
+		if r.FromPort != -1 || r.ToPort != -1 {
+			return nil, &domain.Error{Kind: domain.Invalid, Msg: "kube-ovn cannot match an icmp type or code"}
+		}
 		out["protocol"] = "icmp"
 	case domain.All:
 		out["protocol"] = "all"

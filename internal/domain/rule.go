@@ -9,7 +9,9 @@ import (
 // CheckRule checks the shape of one rule. A peer CIDR is any canonical IPv4
 // prefix, including 0.0.0.0/0. It is not a VPC CIDR and is not passed to
 // CheckVPCCIDR. TCP and UDP ports are 0 through 65535 with from <= to.
-// ICMP and all use port -1. Exactly one of peer CIDR and peer group is set.
+// ICMP carries the type in FromPort and the code in ToPort. Each is 0 through
+// 255, or -1 for all, and a type of -1 requires a code of -1. All uses port
+// -1. Exactly one of peer CIDR and peer group is set.
 func CheckRule(r Rule) error {
 	switch r.Direction {
 	case Ingress, Egress:
@@ -21,9 +23,16 @@ func CheckRule(r Rule) error {
 		if r.FromPort < 0 || r.ToPort > 65535 || r.FromPort > r.ToPort {
 			return invalid("tcp and udp ports must be 0 through 65535")
 		}
-	case ICMP, All:
+	case ICMP:
+		if r.FromPort < -1 || r.FromPort > 255 || r.ToPort < -1 || r.ToPort > 255 {
+			return invalid("icmp type and code must be 0 through 255, or -1")
+		}
+		if r.FromPort == -1 && r.ToPort != -1 {
+			return invalid("an icmp type of -1 requires a code of -1")
+		}
+	case All:
 		if r.FromPort != -1 || r.ToPort != -1 {
-			return invalid("icmp and all rules use port -1")
+			return invalid("all rules use port -1")
 		}
 	default:
 		return invalid("rule protocol is required")
