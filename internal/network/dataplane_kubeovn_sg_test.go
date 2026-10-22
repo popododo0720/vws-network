@@ -28,7 +28,7 @@ func TestOvnRule(t *testing.T) {
 			map[string]any{"ipVersion": "ipv4", "priority": int64(1), "policy": "allow", "protocol": "udp", "portRangeMin": int64(53), "portRangeMax": int64(53), "remoteType": "securityGroup", "remoteSecurityGroup": "sg-peer"},
 		},
 		{
-			"icmp has no ports",
+			"all icmp has no ports",
 			domain.Rule{Direction: domain.Ingress, Protocol: domain.ICMP, FromPort: -1, ToPort: -1, Peer: anywhere},
 			map[string]any{"ipVersion": "ipv4", "priority": int64(1), "policy": "allow", "protocol": "icmp", "remoteType": "address", "remoteAddress": "0.0.0.0/0"},
 		},
@@ -47,10 +47,13 @@ func TestOvnRule(t *testing.T) {
 }
 
 func TestOvnRuleRejectsUnsupported(t *testing.T) {
+	anywhere := domain.Peer{CIDR: mustP("0.0.0.0/0")}
 	cases := map[string]domain.Rule{
-		"tcp port 0":     {Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 0, ToPort: 10, Peer: domain.Peer{CIDR: mustP("0.0.0.0/0")}},
-		"no direction":   {Protocol: domain.All, FromPort: -1, ToPort: -1, Peer: domain.Peer{CIDR: mustP("0.0.0.0/0")}},
+		"tcp port 0":     {Direction: domain.Ingress, Protocol: domain.TCP, FromPort: 0, ToPort: 10, Peer: anywhere},
+		"no direction":   {Protocol: domain.All, FromPort: -1, ToPort: -1, Peer: anywhere},
 		"cidr and group": {Direction: domain.Ingress, Protocol: domain.All, FromPort: -1, ToPort: -1, Peer: domain.Peer{CIDR: mustP("0.0.0.0/0"), Group: "sg-1"}},
+		"icmp type 0":    {Direction: domain.Ingress, Protocol: domain.ICMP, FromPort: 0, ToPort: 0, Peer: anywhere},
+		"icmp type 8":    {Direction: domain.Ingress, Protocol: domain.ICMP, FromPort: 8, ToPort: -1, Peer: anywhere},
 	}
 	for name, r := range cases {
 		if _, err := ovnRule(r); !isInvalid(err) {

@@ -302,6 +302,9 @@ func parseRules(rs []*networkv1.SecurityGroupRule, project, region, vpc string) 
 		default:
 			return nil, invalidSpec("rule peer is required")
 		}
+		if err := domain.CheckRule(rule); err != nil {
+			return nil, invalidSpec(err.Error())
+		}
 		out = append(out, rule)
 	}
 	return out, nil
@@ -325,13 +328,11 @@ func parseProtocol(p networkv1.Protocol, from, to int32) (domain.Protocol, int32
 	case networkv1.Protocol_PROTOCOL_UDP:
 		return domain.UDP, from, to, nil
 	case networkv1.Protocol_PROTOCOL_ICMP:
-		if from != 0 || to != 0 {
-			return 0, 0, 0, invalidSpec("icmp and all rules use port 0")
-		}
-		return domain.ICMP, -1, -1, nil
+		// AWS IpPermission carries the ICMP type in from_port and the code in to_port.
+		return domain.ICMP, from, to, nil
 	case networkv1.Protocol_PROTOCOL_ALL:
 		if from != 0 || to != 0 {
-			return 0, 0, 0, invalidSpec("icmp and all rules use port 0")
+			return 0, 0, 0, invalidSpec("all rules use port 0")
 		}
 		return domain.All, -1, -1, nil
 	default:
@@ -508,7 +509,8 @@ func toRule(project, region, vpc string, r domain.Rule) *networkv1.SecurityGroup
 		FromPort:  r.FromPort,
 		ToPort:    r.ToPort,
 	}
-	if r.Protocol == domain.ICMP || r.Protocol == domain.All {
+	// ICMP keeps its type and code. All uses 0/0 on the wire.
+	if r.Protocol == domain.All {
 		out.FromPort = 0
 		out.ToPort = 0
 	}
