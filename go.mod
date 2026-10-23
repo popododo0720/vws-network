@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	cloud.google.com/go/longrunning v1.3.0
 	github.com/popododo0720/vws-lib v0.2.0
-	github.com/popododo0720/vws-proto v0.0.0
+	github.com/popododo0720/vws-proto v0.5.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
 	google.golang.org/grpc v1.84.0
@@ -103,7 +103,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/popododo0720/vws-proto => ./third_party/vws-proto
 
 replace github.com/popododo0720/vws-lib => ./third_party/vws-lib
