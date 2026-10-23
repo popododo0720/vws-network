@@ -9,6 +9,7 @@ require (
 	github.com/popododo0720/vws-lib v0.2.0
 	github.com/popododo0720/vws-proto v0.5.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
+	golang.org/x/mod v0.41.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
