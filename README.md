@@ -33,7 +33,7 @@ Mutating RPCs need an `idempotency_key`. The same project, key and request retur
 
 When an operation is `SUCCEEDED`, the fake dataplane matches that resource's desired state. When the process comes back up, operations left `RUNNING` go back to `PENDING` and converge from there.
 
-`third_party/vws-proto` is `main` `a1c6084` of `github.com/popododo0720/vws-proto`. The replace in `go.mod` points at that path. Once vws-proto is public, the replace is removed and a tagged version is required.
+The API is `github.com/popododo0720/vws-proto` at a release tag (`go.mod` pins it; today `v0.5.0`). The repo is public, so `go mod download` fetches it through the default module proxy with no token or `GOPRIVATE`. To take a new proto release, run `go get github.com/popododo0720/vws-proto@vX.Y.Z` and `go mod tidy`. Never copy or `replace` the module.
 
 `third_party/vws-lib` is commit `d361c4a` of `github.com/popododo0720/vws-lib` (main after the English-only PR; same Go code as `v0.2.0` `fe9cd29`). It was copied with `scripts/vendor-lib.sh vendor <commit>` and is used through a replace. CI checks with `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check` that the copy has not changed. Do not edit the copy.
 
