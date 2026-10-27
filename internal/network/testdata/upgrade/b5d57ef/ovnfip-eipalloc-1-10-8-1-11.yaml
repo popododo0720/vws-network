@@ -1,0 +1,10 @@
+apiVersion: kubeovn.io/v1
+kind: OvnFip
+metadata:
+  annotations:
+    vws.popododo0720.io/id: eipalloc-1-10-8-1-11
+  name: eipalloc-1-10-8-1-11
+spec:
+  ovnEip: eipalloc-1
+  v4Ip: 10.8.1.11
+  vpc: vpc-1

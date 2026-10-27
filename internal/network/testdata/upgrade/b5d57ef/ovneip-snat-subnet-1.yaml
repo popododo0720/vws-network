@@ -1,0 +1,9 @@
+apiVersion: kubeovn.io/v1
+kind: OvnEip
+metadata:
+  annotations:
+    vws.popododo0720.io/id: snat-subnet-1
+  name: snat-subnet-1
+spec:
+  externalSubnet: external
+  type: nat

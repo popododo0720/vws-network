@@ -1,0 +1,10 @@
+apiVersion: kubeovn.io/v1
+kind: OvnEip
+metadata:
+  annotations:
+    vws.popododo0720.io/id: eipalloc-1
+  name: eipalloc-1
+spec:
+  externalSubnet: external
+  type: nat
+  v4Ip: 198.51.100.1
