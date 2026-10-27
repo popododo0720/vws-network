@@ -1,0 +1,16 @@
+apiVersion: kubeovn.io/v1
+kind: SecurityGroup
+metadata:
+  annotations:
+    vws.popododo0720.io/id: sg-1
+  name: sg-1
+spec:
+  allowSameGroupTraffic: false
+  egressRules:
+  - ipVersion: ipv4
+    policy: allow
+    priority: 1
+    protocol: all
+    remoteAddress: 0.0.0.0/0
+    remoteType: address
+  ingressRules: []

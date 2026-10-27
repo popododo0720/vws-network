@@ -1,0 +1,9 @@
+apiVersion: kubeovn.io/v1
+kind: OvnSnatRule
+metadata:
+  annotations:
+    vws.popododo0720.io/id: snat-subnet-1
+  name: snat-subnet-1
+spec:
+  ovnEip: snat-subnet-1
+  vpcSubnet: subnet-1
