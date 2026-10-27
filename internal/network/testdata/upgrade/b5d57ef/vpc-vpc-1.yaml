@@ -1,0 +1,14 @@
+apiVersion: kubeovn.io/v1
+kind: Vpc
+metadata:
+  annotations:
+    vws.popododo0720.io/id: vpc-1
+  name: vpc-1
+spec:
+  enableExternal: true
+  extraExternalSubnets:
+  - external
+  staticRoutes:
+  - cidr: 0.0.0.0/0
+    nextHopIP: 10.78.0.1
+    policy: policyDst
