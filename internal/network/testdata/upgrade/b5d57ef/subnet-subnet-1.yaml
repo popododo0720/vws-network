@@ -1,0 +1,14 @@
+apiVersion: kubeovn.io/v1
+kind: Subnet
+metadata:
+  annotations:
+    vws.popododo0720.io/id: subnet-1
+  name: subnet-1
+spec:
+  cidrBlock: 10.8.1.0/24
+  dhcpV4Options: lease_time=3600,mtu=9001
+  enableDHCP: true
+  mtu: 9001
+  protocol: IPv4
+  provider: subnet-1.vws-system.ovn
+  vpc: vpc-1
