@@ -35,6 +35,7 @@ func TestServiceAgainstStores(t *testing.T) {
 			t.Run("overlap writes nothing", func(t *testing.T) { testOverlapWritesNothing(t, opener.open(t)) })
 			t.Run("idempotency", func(t *testing.T) { testIdempotency(t, opener.open(t)) })
 			t.Run("converge and delete", func(t *testing.T) { testConvergeAndDelete(t, opener.open(t)) })
+			t.Run("subnet cidr after delete", func(t *testing.T) { testSubnetCIDRAfterDelete(t, opener.open(t)) })
 			t.Run("elastic ip", func(t *testing.T) { testElasticIP(t, opener.open(t)) })
 			t.Run("dataplane retry", func(t *testing.T) { testDataplaneRetry(t, opener.open(t)) })
 			t.Run("revoke retries after failure", func(t *testing.T) { testRevokeRetriesAfterFailure(t, opener.open(t)) })
@@ -145,6 +146,76 @@ func testConvergeAndDelete(t *testing.T, repo repository) {
 	}
 	if fake.has("vpc/" + string(vpc.ID)) {
 		t.Fatal("dataplane kept the vpc")
+	}
+}
+
+// A create's key belongs to the EC2 request, and the gateway derives it from
+// the CIDR. A create after a delete sends the key of the deleted subnet, so the
+// subnet must be made again instead of replaying a resource that is gone.
+func testSubnetCIDRAfterDelete(t *testing.T, repo repository) {
+	t.Helper()
+	svc, fake := openTest(t, repo)
+	ctx := context.Background()
+	vpcOp, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.41.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	req := domain.CreateSubnet{
+		VPC: domain.VPCID(vpcOp.Resource), CIDR: mustP("10.41.1.0/24"), Zone: "az1", ID: "subnet-reuse",
+	}
+	if _, err := svc.CreateSubnet(ctx, call("proj", "subnet"), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeleteSubnet(ctx, call("proj", "delete"), domain.DeleteSubnet{Subnet: req.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if fake.has("subnet/" + string(req.ID)) {
+		t.Fatal("deleted subnet left a backend object")
+	}
+	again, err := svc.CreateSubnet(ctx, call("proj", "subnet"), req)
+	if err != nil {
+		t.Fatalf("create with the key of the deleted subnet: %v", err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	op, err := svc.GetOperation(ctx, "proj", again.ID)
+	if err != nil || op.State != domain.OpSucceeded {
+		t.Fatalf("recreated operation %+v err %v", op, err)
+	}
+	sub, err := svc.GetSubnet(ctx, "proj", req.ID)
+	if err != nil || sub.Status != domain.StatusAvailable || sub.CIDR != req.CIDR {
+		t.Fatalf("recreated subnet %+v err %v", sub, err)
+	}
+	if !fake.has("subnet/" + string(req.ID)) {
+		t.Fatal("backend is missing the recreated subnet")
+	}
+	// The freed CIDR is free for a fresh key too, not only for the replay.
+	if _, err := svc.DeleteSubnet(ctx, call("proj", "delete-again"), domain.DeleteSubnet{Subnet: req.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	fresh := req
+	fresh.ID = "subnet-fresh"
+	if _, err := svc.CreateSubnet(ctx, call("proj", "fresh"), fresh); err != nil {
+		t.Fatalf("create with a freed cidr: %v", err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetSubnet(ctx, "proj", fresh.ID); err != nil {
+		t.Fatalf("subnet after the cidr was freed: %v", err)
 	}
 }
 

@@ -343,7 +343,7 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 		return err
 	}
 	defer r.unlock()
-	if c.enqueue != nil && c.settle != nil {
+	if !c.exclusive() {
 		return errLostClaim
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -367,6 +367,11 @@ func (r *sqliteRepo) commit(ctx context.Context, c commit) error {
 	}
 	if c.enqueue != nil {
 		if err := insertJob(ctx, tx, *c.enqueue); err != nil {
+			return err
+		}
+	}
+	if c.revive != nil {
+		if err := reviveJob(ctx, tx, *c.revive); err != nil {
 			return err
 		}
 	}
@@ -463,6 +468,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		kind, msg, string(j.op.Key), j.fingerprint[:], j.attempts, nano(j.notBefore), j.token)
 	if err != nil {
 		return fmt.Errorf("insertJob: %w", err)
+	}
+	return nil
+}
+
+// reviveJob puts a terminal operation back to pending with the same id, key and
+// sequence, so the worker claims it again.
+func reviveJob(ctx context.Context, tx *sql.Tx, j job) error {
+	res, err := tx.ExecContext(ctx, `
+UPDATE operations SET state = ?, lane = ?, err_kind = 0, err_msg = '', attempts = ?, not_before = ?, token = ''
+WHERE id = ?`, int(j.op.State), string(j.lane), j.attempts, nano(j.notBefore), j.op.ID)
+	if err != nil {
+		return fmt.Errorf("reviveJob: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reviveJob: %w", err)
+	}
+	if n != 1 {
+		return errLostClaim
 	}
 	return nil
 }

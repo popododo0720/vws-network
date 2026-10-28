@@ -345,6 +345,17 @@ func KindOf(typ OperationType) ResourceKind {
 	}
 }
 
+// Creates reports whether an operation of this type makes its resource.
+// A create that is replayed after its resource was deleted makes it again.
+func Creates(typ OperationType) bool {
+	switch typ {
+	case OpCreateVPC, OpCreateSubnet, OpCreateSecurityGroup, OpAllocateElasticIP:
+		return true
+	default:
+		return false
+	}
+}
+
 // OpState is the caller-visible operation lifecycle. Succeeded and Failed are terminal.
 type OpState int
 

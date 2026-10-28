@@ -35,13 +35,32 @@ type repository interface {
 }
 
 // commit is one atomic write. A nil state leaves the project untouched.
-// enqueue and settle are mutually exclusive. settle must carry the claim token.
+// enqueue, revive and settle are mutually exclusive. settle must carry the claim
+// token. revive puts a terminal operation back to pending with the same id, key
+// and sequence, so the worker claims it again.
 type commit struct {
 	project domain.ProjectID
 	base    int64
 	state   *domain.State
 	enqueue *job
+	revive  *job
 	settle  *job
+}
+
+// exclusive reports that the commit does at most one of enqueue, revive and
+// settle, the three writes to an operation.
+func (c commit) exclusive() bool {
+	n := 0
+	if c.enqueue != nil {
+		n++
+	}
+	if c.revive != nil {
+		n++
+	}
+	if c.settle != nil {
+		n++
+	}
+	return n <= 1
 }
 
 // job is one operation plus the fields the worker needs.
