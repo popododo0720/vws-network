@@ -99,6 +99,9 @@ func TestEnvtestSubnetAndSNATLifecycle(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKey{Name: "subnet-1"}, s); !apierrors.IsNotFound(err) {
 		t.Fatalf("subnet still present: %v", err)
 	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: envNamespace, Name: "subnet-1"}, k.nad("subnet-1")); !apierrors.IsNotFound(err) {
+		t.Fatalf("nad still present: %v", err)
+	}
 }
 
 func TestEnvtestRulesAndElasticIP(t *testing.T) {
