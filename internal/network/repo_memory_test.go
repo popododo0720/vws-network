@@ -133,7 +133,7 @@ func (r *memRepo) commit(ctx context.Context, c commit) error {
 		return err
 	}
 	defer r.unlock()
-	if c.enqueue != nil && c.settle != nil {
+	if !c.exclusive() {
 		return errLostClaim
 	}
 	proj := r.projects[c.project]
@@ -165,6 +165,18 @@ func (r *memRepo) commit(ctx context.Context, c commit) error {
 			return nil
 		}
 	}
+	revive := -1
+	if c.revive != nil {
+		for i := range r.jobs {
+			if r.jobs[i].op.ID == c.revive.op.ID {
+				revive = i
+				break
+			}
+		}
+		if revive < 0 {
+			return errLostClaim
+		}
+	}
 	if c.state != nil {
 		proj.version++
 		proj.state = c.state.Clone()
@@ -183,6 +195,15 @@ func (r *memRepo) commit(ctx context.Context, c commit) error {
 		j := *c.enqueue
 		j.seq = r.nextSeq
 		r.jobs = append(r.jobs, j)
+	}
+	if c.revive != nil {
+		cur := r.jobs[revive]
+		cur.op = c.revive.op
+		cur.lane = c.revive.lane
+		cur.attempts = c.revive.attempts
+		cur.notBefore = c.revive.notBefore
+		cur.token = ""
+		r.jobs[revive] = cur
 	}
 	if c.settle != nil {
 		cur := r.jobs[idx]

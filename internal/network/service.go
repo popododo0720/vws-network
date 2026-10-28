@@ -1036,11 +1036,21 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 		if err != nil {
 			return domain.Operation{}, err
 		}
+		var again *job
 		if ok {
-			if existing.fingerprint == fp {
+			if existing.fingerprint != fp {
+				return domain.Operation{}, &domain.Error{
+					Kind: domain.Conflict, Msg: "idempotency key reused with a different request",
+				}
+			}
+			stale, err := s.stale(ctx, existing)
+			if err != nil {
+				return domain.Operation{}, err
+			}
+			if !stale {
 				return existing.op, nil
 			}
-			return domain.Operation{}, &domain.Error{Kind: domain.Conflict, Msg: "idempotency key reused with a different request"}
+			again = &existing
 		}
 		st, ver, err := s.repo.load(ctx, c.Project)
 		if err != nil {
@@ -1061,18 +1071,34 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 				State: domain.OpSucceeded, Key: c.Key,
 			}, nil
 		}
-		op := domain.Operation{
-			ID: s.newID("op-"), Project: c.Project, Type: typ, Resource: resource,
-			State: domain.OpPending, Key: c.Key,
-		}
 		reconcile := write && !st.TextOnly(clone)
 		lane, _ := clone.LaneKind(domain.KindOf(typ), resource)
-		if !reconcile {
-			op.State = domain.OpSucceeded
-			lane = ""
+		cmt := commit{project: c.Project}
+		var op domain.Operation
+		switch {
+		case again != nil && reconcile:
+			op = again.op
+			op.State = domain.OpPending
+			op.Err = nil
+			next := *again
+			next.op = op
+			next.lane = lane
+			next.attempts = 0
+			next.notBefore = time.Time{}
+			cmt.revive = &next
+		case again != nil:
+			return again.op, nil
+		default:
+			op = domain.Operation{
+				ID: s.newID("op-"), Project: c.Project, Type: typ, Resource: resource,
+				State: domain.OpPending, Key: c.Key,
+			}
+			if !reconcile {
+				op.State = domain.OpSucceeded
+				lane = ""
+			}
+			cmt.enqueue = &job{op: op, fingerprint: fp, lane: lane}
 		}
-		enq := &job{op: op, fingerprint: fp, lane: lane}
-		cmt := commit{project: c.Project, enqueue: enq}
 		if write {
 			cmt.base = ver
 			cmt.state = &clone
@@ -1090,6 +1116,22 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 		return op, nil
 	}
 	return s.commitFailure(ctx, c, fp, last)
+}
+
+// stale reports whether a replayed terminal create must run again because its
+// resource was deleted after it settled. A create is idempotent only while the
+// resource it made exists. The EC2 gateway derives the key from the request, so
+// the create that follows a delete sends the key of the deleted subnet.
+func (s *Service) stale(ctx context.Context, j job) (bool, error) {
+	if !domain.Creates(j.op.Type) || (j.op.State != domain.OpSucceeded && j.op.State != domain.OpFailed) {
+		return false, nil
+	}
+	st, _, err := s.repo.load(ctx, j.op.Project)
+	if err != nil {
+		return false, err
+	}
+	_, present := st.LaneKind(domain.KindOf(j.op.Type), j.op.Resource)
+	return !present, nil
 }
 
 // commitFailure turns a store race into a domain error. The sentinels stay
