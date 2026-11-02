@@ -20,6 +20,7 @@ func (h *handler) toOp(project, requestID, resourceName string, verb commonv1.Op
 		Resource:  resourceName,
 		Verb:      verb,
 		RequestId: requestID,
+		Action:    actionOf(op.Type),
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, "internal error")
@@ -42,6 +43,25 @@ func (h *handler) toOp(project, requestID, resourceName string, verb commonv1.Op
 		out.Result = &longrunningpb.Operation_Error{Error: status.New(code, msg).Proto()}
 	}
 	return out, nil
+}
+
+// EC2 action names reported in OperationMetadata.action. Empty means the
+// verb alone describes the operation.
+const (
+	actionAssociateAddress    = "AssociateAddress"
+	actionDisassociateAddress = "DisassociateAddress"
+)
+
+// actionOf names the EC2 action for operation types that share a verb.
+func actionOf(typ domain.OperationType) string {
+	switch typ {
+	case domain.OpAssociateElasticIP:
+		return actionAssociateAddress
+	case domain.OpDisassociateElasticIP:
+		return actionDisassociateAddress
+	default:
+		return ""
+	}
 }
 
 func verbOf(typ domain.OperationType) commonv1.OperationVerb {

@@ -699,7 +699,18 @@ func (s *Service) UpdateElasticIP(ctx context.Context, c domain.Call, r domain.U
 	if (r.Instance == "") != (r.Device == "") {
 		return domain.Operation{}, &domain.Error{Kind: domain.Invalid, Msg: "instance and device name are required together"}
 	}
-	return s.mutate(ctx, c, domain.OpUpdateElasticIP, string(r.ElasticIP), r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
+	// The operation type records whether the association was set or cleared,
+	// so GetOperation can report AssociateAddress or DisassociateAddress later.
+	// The fingerprint stays keyed on UpdateElasticIp: a request id retried
+	// across an upgrade still replays instead of reporting a key conflict.
+	typ := domain.OpUpdateElasticIP
+	if r.SetAssociation {
+		typ = domain.OpDisassociateElasticIP
+		if r.Instance != "" {
+			typ = domain.OpAssociateElasticIP
+		}
+	}
+	return s.mutateAs(ctx, c, typ, domain.OpUpdateElasticIP, string(r.ElasticIP), r, func(st *domain.State, taken func(netip.Addr) bool) (bool, error) {
 		e, ok := st.ElasticIPs[r.ElasticIP]
 		if ok && otherName(e.Region, r.Region, "", "") {
 			return false, &domain.Error{Kind: domain.NotFound, Msg: "elastic ip not found"}
@@ -1023,10 +1034,16 @@ func (s *Service) loadProject(ctx context.Context, p domain.ProjectID) (domain.S
 }
 
 func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.OperationType, resource string, req any, apply func(*domain.State, func(netip.Addr) bool) (bool, error)) (domain.Operation, error) {
+	return s.mutateAs(ctx, c, typ, typ, resource, req, apply)
+}
+
+// mutateAs is mutate with the idempotency fingerprint keyed on fpTyp instead
+// of the stored operation type.
+func (s *Service) mutateAs(ctx context.Context, c domain.Call, typ, fpTyp domain.OperationType, resource string, req any, apply func(*domain.State, func(netip.Addr) bool) (bool, error)) (domain.Operation, error) {
 	if err := c.Validate(); err != nil {
 		return domain.Operation{}, err
 	}
-	fp, err := fingerprint(typ, req)
+	fp, err := fingerprint(fpTyp, req)
 	if err != nil {
 		return domain.Operation{}, err
 	}
