@@ -6,6 +6,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -288,7 +289,14 @@ func TestEnvtestStoreRoleIsEnough(t *testing.T) {
 	if vpcs, err := svc.ListVPCs(ctx, "proj"); err != nil || len(vpcs) != 0 {
 		t.Fatalf("vpcs after delete %+v err %v", vpcs, err)
 	}
-	if _, err := newKubeRepo(ctx, c, envNamespace); err != nil {
+	if got := storeObjects(t, admin)[storeAddress]; got != 0 {
+		t.Fatalf("%d address claims left after release", got)
+	}
+	later := &kubeRepo{c: c, ns: envNamespace, now: func() time.Time { return time.Now().Add(2 * kubeGrace) }}
+	if err := later.repair(ctx); err != nil {
 		t.Fatalf("repair as the store role: %v", err)
+	}
+	if got := storeObjects(t, admin); got[storeResource+"/vpc"] != 0 || got[storeResource+"/eip"] != 0 {
+		t.Fatalf("tombstones left after repair past the grace period: %v", got)
 	}
 }
