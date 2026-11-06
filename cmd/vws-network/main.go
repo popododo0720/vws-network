@@ -29,7 +29,10 @@ const flagVMMTU = "vm-mtu"
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "grpc listen address")
-	dbPath := flag.String("db", "", "sqlite database path")
+	dbPath := flag.String("db", "", "sqlite database path; set this or -store-namespace")
+	storeNamespace := flag.String("store-namespace", "",
+		"namespace whose ConfigMaps hold the desired state instead of -db; "+
+			"read through -kubeconfig or the in-cluster service account")
 	poolFlag := flag.String("pool", "", "elastic ip pool cidr; required, no default, and never an RFC 5737 documentation range")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path; selects the Kube-OVN dataplane and takes precedence over the in-cluster config")
 	externalSubnet := flag.String("kube-external-subnet", "", "Kube-OVN subnet that holds the elastic IP pool; required for Kube-OVN, and without -kubeconfig it selects the in-cluster service account")
@@ -48,7 +51,7 @@ func main() {
 	gatewayNodes := flag.String("kube-gateway-nodes", "", "comma-separated nodes kept at ovn.kubernetes.io/external-gw=true while any VPC exists; no other node is touched")
 	gatewayRecheck := flag.Duration("kube-gateway-recheck", 5*time.Second, "how often -kube-gateway-nodes labels are checked and restored; 0 means the default, otherwise at least 1s")
 	flag.Parse()
-	pool, err := parseStart(*dbPath, *poolFlag)
+	pool, err := parseStart(*dbPath, *storeNamespace, *poolFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vws-network:", err)
 		fmt.Fprintln(os.Stderr, usage)
@@ -66,7 +69,8 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *dbPath, pool, network.KubeOVNConfig{
+	store := network.StoreConfig{Namespace: *storeNamespace, Kubeconfig: *kubeconfig}
+	if err := run(ctx, *listen, *dbPath, store, pool, network.KubeOVNConfig{
 		Kubeconfig:         *kubeconfig,
 		ExternalSubnet:     *externalSubnet,
 		NADNamespace:       *nadNamespace,
@@ -85,7 +89,9 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, listen, dbPath string, pool netip.Prefix, kube network.KubeOVNConfig) (err error) {
+func run(
+	ctx context.Context, listen, dbPath string, store network.StoreConfig, pool netip.Prefix, kube network.KubeOVNConfig,
+) (err error) {
 	shutdown, err := obs.Setup(ctx, obs.ForService(grpcapi.ServiceName))
 	if err != nil {
 		return fmt.Errorf("obs setup: %w", err)
@@ -95,7 +101,7 @@ func run(ctx context.Context, listen, dbPath string, pool netip.Prefix, kube net
 			err = errors.Join(err, fmt.Errorf("obs shutdown: %w", serr))
 		}
 	}()
-	svc, err := network.Open(ctx, network.Config{DatabasePath: dbPath, AddressPool: pool, KubeOVN: kube})
+	svc, err := network.Open(ctx, network.Config{DatabasePath: dbPath, Store: store, AddressPool: pool, KubeOVN: kube})
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
