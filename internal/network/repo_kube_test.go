@@ -155,7 +155,7 @@ func TestKubeRepoRepairDropsStrayAddressClaim(t *testing.T) {
 	c := fake.NewClientBuilder().Build()
 	repo := openKubeRepo(t, c, "vws-system")
 	stray := repo.configMap(addrName(netip.MustParseAddr("198.51.100.9")), storeAddress, projectSet("proj"),
-		map[string]string{"addr": "198.51.100.9", "project": "proj", "txn": "chg-lost"})
+		map[string]string{"value": "198.51.100.9", "project": "proj", "txn": "chg-lost"})
 	stray.CreationTimestamp = metav1.NewTime(time.Now())
 	if err := c.Create(ctx, stray); err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func TestKubeRepoAllocationReclaimsStrayClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	stray := repo.configMap(addrName(netip.MustParseAddr("198.51.100.9")), storeAddress, projectSet("other"),
-		map[string]string{"addr": "198.51.100.9", "project": "other", "txn": "chg-lost"})
+		map[string]string{"value": "198.51.100.9", "project": "other", "txn": "chg-lost"})
 	if err := c.Create(ctx, stray); err != nil {
 		t.Fatal(err)
 	}

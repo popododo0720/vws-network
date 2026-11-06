@@ -90,7 +90,9 @@ func TestRepositoryContract(t *testing.T) {
 			if err := repo.commit(ctx, commit{project: "proj", base: 0, state: &st, enqueue: &job{op: op}}); !errors.Is(err, errStale) {
 				t.Fatalf("second commit = %v", err)
 			}
-			other := st.Clone()
+			other := domain.State{ElasticIPs: map[domain.ElasticIPID]domain.ElasticIP{
+				"eip-2": {ID: "eip-2", Address: addr, Status: domain.StatusPending},
+			}}
 			err = repo.commit(ctx, commit{project: "other", base: 0, state: &other, enqueue: &job{op: domain.Operation{ID: "op-2", Project: "other", Key: "k2", State: domain.OpPending}}})
 			if !errors.Is(err, errAddressTaken) {
 				t.Fatalf("cross-project address = %v", err)
@@ -108,6 +110,68 @@ func TestRepositoryContract(t *testing.T) {
 			again, ok, err := repo.claim(ctx, time.Now(), "tok-3")
 			if err != nil || !ok || again.token != "tok-3" {
 				t.Fatalf("reclaim %+v ok %v err %v", again, ok, err)
+			}
+		})
+	}
+}
+
+// TestResourceIDIsHeldByOneProject: Kube-OVN objects are cluster-scoped and
+// named by the resource id, so a second project may not take an id another
+// project holds, and the id is free again once its holder deletes it.
+func TestResourceIDIsHeldByOneProject(t *testing.T) {
+	ctx := context.Background()
+	cidr := netip.MustParsePrefix("10.0.0.0/16")
+	vpc := func(id domain.VPCID, sg domain.SecurityGroupID) domain.State {
+		return domain.State{
+			VPCs:   map[domain.VPCID]domain.VPC{id: {ID: id, CIDR: cidr, Status: domain.StatusPending}},
+			Groups: map[domain.SecurityGroupID]domain.SecurityGroup{sg: {ID: sg, VPC: id, Status: domain.StatusPending}},
+		}
+	}
+	for _, opener := range storeOpeners() {
+		t.Run(opener.name, func(t *testing.T) {
+			repo := opener.open(t)
+			held := vpc("vpc-1", "sg-1")
+			if err := repo.commit(ctx, commit{project: "proj", state: &held}); err != nil {
+				t.Fatal(err)
+			}
+			for name, st := range map[string]domain.State{"vpc": vpc("vpc-1", "sg-2"), "group": vpc("vpc-2", "sg-1")} {
+				if err := repo.commit(ctx, commit{project: "other", state: &st}); !errors.Is(err, errIDTaken) {
+					t.Fatalf("%s id of another project = %v", name, err)
+				}
+				got, ver, err := repo.load(ctx, "other")
+				if err != nil || ver != 0 || len(got.VPCs)+len(got.Groups) != 0 {
+					t.Fatalf("refused commit wrote ver %d state %+v err %v", ver, got, err)
+				}
+			}
+			sameName := domain.State{Subnets: map[domain.SubnetID]domain.Subnet{
+				"vpc-1": {ID: "vpc-1", VPC: "vpc-9", CIDR: netip.MustParsePrefix("10.0.1.0/24"), Status: domain.StatusPending},
+			}}
+			if err := repo.commit(ctx, commit{project: "other", state: &sameName}); err != nil {
+				t.Fatalf("a subnet named like another project's vpc is a different object: %v", err)
+			}
+			_, ver, err := repo.load(ctx, "proj")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.commit(ctx, commit{project: "proj", base: ver, state: &domain.State{}}); err != nil {
+				t.Fatal(err)
+			}
+			_, ver, err = repo.load(ctx, "other")
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := vpc("vpc-1", "sg-1")
+			moved.Subnets = sameName.Subnets
+			if err := repo.commit(ctx, commit{project: "other", base: ver, state: &moved}); err != nil {
+				t.Fatalf("id freed by delete = %v", err)
+			}
+			again := vpc("vpc-1", "sg-1")
+			_, ver, err = repo.load(ctx, "proj")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.commit(ctx, commit{project: "proj", base: ver, state: &again}); !errors.Is(err, errIDTaken) {
+				t.Fatalf("id taken back from its new holder = %v", err)
 			}
 		})
 	}

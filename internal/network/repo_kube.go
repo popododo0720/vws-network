@@ -34,8 +34,10 @@ import (
 //   - Each VPC, subnet, security group and elastic IP is one ConfigMap holding
 //     its document, the change that wrote it, and the document before that.
 //   - Each operation is one ConfigMap. claim and requeue change it with CAS.
-//   - An idempotency key and a pool address are claim ConfigMaps named after
-//     their subject, so object-name uniqueness keeps each one single.
+//   - An idempotency key, a pool address and a resource id are claim
+//     ConfigMaps named after their subject, so object-name uniqueness keeps
+//     each one single. A resource id claim keeps two projects from naming
+//     the same cluster-scoped Kube-OVN object.
 //
 // A commit writes its change set into the head and then applies it to the
 // other objects. A reader that finds an unapplied change set applies it
@@ -55,12 +57,15 @@ const (
 	labelStore   = annotationPrefix + "store"
 	labelProject = annotationPrefix + "project"
 	labelOpState = annotationPrefix + "op-state"
+	labelKind    = annotationPrefix + "kind"
+	labelID      = annotationPrefix + "id"
 
 	storeHead     = "project"
 	storeResource = "resource"
 	storeOp       = "operation"
 	storeKey      = "key"
 	storeAddress  = "address"
+	storeID       = "id"
 
 	// kubeObjectLimit is the size limit of one written object (vws-deploy#478).
 	kubeObjectLimit = 256 << 10
@@ -104,7 +109,7 @@ func storeName(store string, parts ...string) string {
 
 func headName(p domain.ProjectID) string { return storeName(storeHead, string(p)) }
 func opName(id string) string            { return storeName(storeOp, id) }
-func addrName(a netip.Addr) string       { return storeName(storeAddress, a.String()) }
+func addrName(a netip.Addr) string       { return addrRef(a).name() }
 func keyName(p domain.ProjectID, k domain.IdempotencyKey) string {
 	return storeName(storeKey, string(p), string(k))
 }
@@ -113,36 +118,62 @@ func resName(p domain.ProjectID, r resRef) string {
 	return storeName(storeResource, string(p), r.Kind, r.ID)
 }
 
-// resRef names one resource of a project.
-type resRef struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-}
-
 // resPut is one resource document a change writes; an empty State deletes.
 type resPut struct {
 	resRef
 	State string `json:"state,omitempty"`
 }
 
-// addrRelease frees a pool address the project no longer holds, if the claim
-// is still the one taken by change Txn.
-type addrRelease struct {
-	Addr string `json:"addr"`
-	Txn  string `json:"txn"`
+// claimRef is a name one project holds alone in the namespace: a pool
+// address, or a resource "<kind>/<id>". Its claim ConfigMap is named after it,
+// so object-name uniqueness keeps it single.
+type claimRef struct {
+	Store string `json:"store"`
+	Value string `json:"value"`
+}
+
+func (c claimRef) name() string { return storeName(c.Store, c.Value) }
+
+func addrRef(a netip.Addr) claimRef { return claimRef{Store: storeAddress, Value: a.String()} }
+func idRef(r resRef) claimRef       { return claimRef{Store: storeID, Value: r.Kind + "/" + r.ID} }
+
+func (c claimRef) taken() error {
+	if c.Store == storeAddress {
+		return errAddressTaken
+	}
+	return errIDTaken
+}
+
+// claimsOf is every claim st holds.
+func claimsOf(st domain.State) map[claimRef]bool {
+	out := map[claimRef]bool{}
+	for a := range addressesOf(st) {
+		out[addrRef(a)] = true
+	}
+	for ref := range resourcesOf(st) {
+		out[idRef(ref)] = true
+	}
+	return out
+}
+
+// claimRelease frees a claim the project no longer holds, if it is still the
+// one taken by change Txn.
+type claimRelease struct {
+	claimRef
+	Txn string `json:"txn"`
 }
 
 // changeSet is everything one commit writes besides the head.
 type changeSet struct {
-	ID       string        `json:"id"`
-	Seq      int64         `json:"seq"`
-	Puts     []resPut      `json:"puts,omitempty"`
-	Op       *jobDoc       `json:"op,omitempty"`
-	OpCreate bool          `json:"op_create,omitempty"`
-	Release  []addrRelease `json:"release,omitempty"`
-	// Take are the pool addresses this change claimed. Applying it marks
-	// each claim confirmed, so an unconfirmed old claim is known to be stray.
-	Take []string `json:"take,omitempty"`
+	ID       string         `json:"id"`
+	Seq      int64          `json:"seq"`
+	Puts     []resPut       `json:"puts,omitempty"`
+	Op       *jobDoc        `json:"op,omitempty"`
+	OpCreate bool           `json:"op_create,omitempty"`
+	Release  []claimRelease `json:"release,omitempty"`
+	// Take are the claims this change took. Applying it marks each claim
+	// confirmed, so an unconfirmed old claim is known to be stray.
+	Take []claimRef `json:"take,omitempty"`
 }
 
 type jobDoc struct {
@@ -294,6 +325,12 @@ func (r *kubeRepo) list(
 
 func projectSet(p domain.ProjectID) labels.Set { return labels.Set{labelProject: hashName(string(p))} }
 
+// resourceSet labels a resource document with its kind and id, so the
+// document of an id is found with a label selector.
+func resourceSet(p domain.ProjectID, ref resRef) labels.Set {
+	return labels.Set{labelProject: hashName(string(p)), labelKind: ref.Kind, labelID: ref.ID}
+}
+
 func callCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, kubeCallTimeout)
 }
@@ -371,17 +408,13 @@ func (r *kubeRepo) apply(ctx context.Context, p domain.ProjectID, cs changeSet) 
 			return err
 		}
 	}
-	for _, raw := range cs.Take {
-		if err := r.confirm(ctx, p, cs, raw); err != nil {
+	for _, ref := range cs.Take {
+		if err := r.confirm(ctx, p, cs, ref); err != nil {
 			return err
 		}
 	}
 	for _, rel := range cs.Release {
-		addr, err := netip.ParseAddr(rel.Addr)
-		if err != nil {
-			return fmt.Errorf("network: change %s release address is corrupt", cs.ID)
-		}
-		cm, err := r.get(ctx, addrName(addr))
+		cm, err := r.get(ctx, rel.name())
 		if err != nil {
 			return err
 		}
@@ -398,20 +431,16 @@ func (r *kubeRepo) apply(ctx context.Context, p domain.ProjectID, cs changeSet) 
 // prev can write, so a commit can check its size before swapping the head.
 func (r *kubeRepo) resourceMap(p domain.ProjectID, put resPut, prev string) *corev1.ConfigMap {
 	most := strconv.FormatInt(math.MaxInt64, 10)
-	return r.configMap(resName(p, put.resRef), storeResource, projectSet(p), map[string]string{
+	return r.configMap(resName(p, put.resRef), storeResource, resourceSet(p, put.resRef), map[string]string{
 		"project": string(p), "kind": put.Kind, "id": put.ID, "seq": most, "state": put.State,
 		"prev_seq": most, "prev": prev, "deleted": most,
 	})
 }
 
-// confirm marks the claim cs took on raw as committed.
-func (r *kubeRepo) confirm(ctx context.Context, p domain.ProjectID, cs changeSet, raw string) error {
-	addr, err := netip.ParseAddr(raw)
-	if err != nil {
-		return fmt.Errorf("network: change %s address is corrupt", cs.ID)
-	}
+// confirm marks the claim cs took on ref as committed.
+func (r *kubeRepo) confirm(ctx context.Context, p domain.ProjectID, cs changeSet, ref claimRef) error {
 	for range kubeAttempts {
-		cm, err := r.get(ctx, addrName(addr))
+		cm, err := r.get(ctx, ref.name())
 		if err != nil || cm == nil || cm.Data["confirmed"] != "" {
 			return err
 		}
@@ -437,7 +466,7 @@ func (r *kubeRepo) applyResource(ctx context.Context, p domain.ProjectID, seq in
 			if put.State == "" {
 				return nil
 			}
-			cm = r.configMap(name, storeResource, projectSet(p), map[string]string{
+			cm = r.configMap(name, storeResource, resourceSet(p, put.resRef), map[string]string{
 				"project": string(p), "kind": put.Kind, "id": put.ID,
 				"seq": strconv.FormatInt(seq, 10), "state": put.State, "prev_seq": "0",
 			})
@@ -593,25 +622,25 @@ func documents(st domain.State) (map[resRef]string, error) {
 		return nil
 	}
 	for id, v := range st.VPCs {
-		if err := add(resRef{"vpc", string(id)}, domain.State{VPCs: map[domain.VPCID]domain.VPC{id: v}}); err != nil {
+		if err := add(resRef{kindVPC, string(id)}, domain.State{VPCs: map[domain.VPCID]domain.VPC{id: v}}); err != nil {
 			return nil, err
 		}
 	}
 	for id, v := range st.Subnets {
 		one := domain.State{Subnets: map[domain.SubnetID]domain.Subnet{id: v}}
-		if err := add(resRef{"subnet", string(id)}, one); err != nil {
+		if err := add(resRef{kindSubnet, string(id)}, one); err != nil {
 			return nil, err
 		}
 	}
 	for id, v := range st.Groups {
 		one := domain.State{Groups: map[domain.SecurityGroupID]domain.SecurityGroup{id: v}}
-		if err := add(resRef{"group", string(id)}, one); err != nil {
+		if err := add(resRef{kindGroup, string(id)}, one); err != nil {
 			return nil, err
 		}
 	}
 	for id, v := range st.ElasticIPs {
 		one := domain.State{ElasticIPs: map[domain.ElasticIPID]domain.ElasticIP{id: v}}
-		if err := add(resRef{"eip", string(id)}, one); err != nil {
+		if err := add(resRef{kindEIP, string(id)}, one); err != nil {
 			return nil, err
 		}
 	}
@@ -653,12 +682,12 @@ func (r *kubeRepo) addressesInUse(ctx context.Context) (map[netip.Addr]bool, err
 	out := make(map[netip.Addr]bool, len(items))
 	for i := range items {
 		cm := &items[i]
-		a, err := netip.ParseAddr(cm.Data["addr"])
+		a, err := netip.ParseAddr(cm.Data["value"])
 		if err != nil {
 			return nil, fmt.Errorf("network: address claim %s is corrupt", cm.Name)
 		}
 		if stray(cm, r.now()) {
-			freed, err := r.reclaim(ctx, a)
+			freed, err := r.reclaim(ctx, addrRef(a))
 			if err != nil {
 				return nil, err
 			}
@@ -875,7 +904,7 @@ func (r *kubeRepo) opChange(ctx context.Context, c commit, cs *changeSet) (bool,
 }
 
 // stateChange adds the resource writes from cur to next to cs and takes every
-// pool address next holds that cur does not. It returns the claims it took.
+// pool address and resource id next holds that cur does not. It returns the claims it took.
 func (r *kubeRepo) stateChange(
 	ctx context.Context, p domain.ProjectID, cur, next domain.State, cs *changeSet,
 ) ([]*corev1.ConfigMap, error) {
@@ -901,17 +930,17 @@ func (r *kubeRepo) stateChange(
 			cs.Puts = append(cs.Puts, resPut{resRef: ref})
 		}
 	}
-	had, has := addressesOf(cur), addressesOf(next)
-	for a := range had {
-		if has[a] {
+	had, has := claimsOf(cur), claimsOf(next)
+	for ref := range had {
+		if has[ref] {
 			continue
 		}
-		cm, err := r.get(ctx, addrName(a))
+		cm, err := r.get(ctx, ref.name())
 		if err != nil {
 			return nil, err
 		}
 		if cm != nil && cm.Data["project"] == string(p) {
-			cs.Release = append(cs.Release, addrRelease{Addr: a.String(), Txn: cm.Data["txn"]})
+			cs.Release = append(cs.Release, claimRelease{claimRef: ref, Txn: cm.Data["txn"]})
 		}
 	}
 	var taken []*corev1.ConfigMap
@@ -921,15 +950,15 @@ func (r *kubeRepo) stateChange(
 		}
 		return err
 	}
-	for a := range has {
-		if had[a] {
+	for ref := range has {
+		if had[ref] {
 			continue
 		}
-		cm := r.configMap(addrName(a), storeAddress, projectSet(p),
-			map[string]string{"addr": a.String(), "project": string(p), "txn": cs.ID})
+		cm := r.configMap(ref.name(), ref.Store, projectSet(p),
+			map[string]string{"value": ref.Value, "project": string(p), "txn": cs.ID})
 		err := r.create(ctx, cm)
 		if apierrors.IsAlreadyExists(err) {
-			freed, rerr := r.reclaim(ctx, a)
+			freed, rerr := r.reclaim(ctx, ref)
 			if rerr != nil {
 				return nil, giveBack(rerr)
 			}
@@ -938,13 +967,13 @@ func (r *kubeRepo) stateChange(
 			}
 		}
 		if apierrors.IsAlreadyExists(err) {
-			return nil, giveBack(errAddressTaken)
+			return nil, giveBack(ref.taken())
 		}
 		if err != nil {
 			return nil, giveBack(err)
 		}
 		taken = append(taken, cm)
-		cs.Take = append(cs.Take, a.String())
+		cs.Take = append(cs.Take, ref)
 	}
 	return taken, nil
 }
@@ -1085,8 +1114,8 @@ func (r *kubeRepo) ping(ctx context.Context) error {
 func (r *kubeRepo) close() error { return nil }
 
 // repair finishes every change set a crash left unapplied, deletes pool
-// address claims older than kubeGrace whose project does not hold the
-// address, and collects old tombstones. It is idempotent.
+// address and resource id claims older than kubeGrace whose project does not
+// hold them, and collects old tombstones. It is idempotent.
 func (r *kubeRepo) repair(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 4*kubeCallTimeout)
 	defer cancel()
@@ -1102,17 +1131,15 @@ func (r *kubeRepo) repair(ctx context.Context) error {
 		}
 		r.collect(ctx, items, h.seq)
 	}
-	claims, err := r.list(ctx, storeAddress, nil)
-	if err != nil {
-		return err
-	}
-	for i := range claims {
-		a, err := netip.ParseAddr(claims[i].Data["addr"])
+	for _, store := range []string{storeAddress, storeID} {
+		claims, err := r.list(ctx, store, nil)
 		if err != nil {
-			return fmt.Errorf("network: address claim %s is corrupt", claims[i].Name)
-		}
-		if _, err := r.reclaim(ctx, a); err != nil {
 			return err
+		}
+		for i := range claims {
+			if _, err := r.reclaim(ctx, claimRef{Store: store, Value: claims[i].Data["value"]}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1124,10 +1151,10 @@ func stray(cm *corev1.ConfigMap, now time.Time) bool {
 	return cm.Data["confirmed"] == "" && !cm.CreationTimestamp.After(now.Add(-kubeGrace))
 }
 
-// reclaim deletes the claim on a when it is stray and its project does not
-// hold a: a commit took it and then lost its head swap or crashed.
-func (r *kubeRepo) reclaim(ctx context.Context, a netip.Addr) (bool, error) {
-	cm, err := r.get(ctx, addrName(a))
+// reclaim deletes the claim on ref when it is stray and its project does not
+// hold ref: a commit took it and then lost its head swap or crashed.
+func (r *kubeRepo) reclaim(ctx context.Context, ref claimRef) (bool, error) {
+	cm, err := r.get(ctx, ref.name())
 	if err != nil || cm == nil {
 		return cm == nil && err == nil, err
 	}
@@ -1138,7 +1165,7 @@ func (r *kubeRepo) reclaim(ctx context.Context, a netip.Addr) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if addressesOf(st)[a] {
+	if claimsOf(st)[ref] {
 		return false, nil
 	}
 	return true, r.deleteAt(ctx, cm)
