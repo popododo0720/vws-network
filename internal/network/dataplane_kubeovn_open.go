@@ -70,6 +70,23 @@ func (c KubeOVNConfig) selected() bool {
 	return c.Kubeconfig != "" || c.ExternalSubnet != "" || c.NADNamespace != "" || c.SNAT || c.Underlay.enabled() || len(c.Direct) > 0 || len(c.GatewayNodes) > 0
 }
 
+// restConfig reads kubeconfig, or the in-cluster ServiceAccount when it is
+// empty. user names the caller in the error.
+func restConfig(user, kubeconfig string) (*rest.Config, error) {
+	if kubeconfig != "" {
+		rc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("%s kubeconfig %s: %w", user, kubeconfig, err)
+		}
+		return rc, nil
+	}
+	rc, err := inClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("%s needs -kubeconfig or an in-cluster service account: %w", user, err)
+	}
+	return rc, nil
+}
+
 // newDataplane is the one place a Config becomes a dataplane.
 func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 	if err := CheckVMMTU(cfg.VMMTU); err != nil {
@@ -98,13 +115,7 @@ func newDataplane(cfg KubeOVNConfig) (dataplane, error) {
 			return nil, err
 		}
 	}
-	var rc *rest.Config
-	var err error
-	if cfg.Kubeconfig != "" {
-		rc, err = clientcmd.BuildConfigFromFlags("", cfg.Kubeconfig)
-	} else if rc, err = inClusterConfig(); err != nil {
-		err = fmt.Errorf("kube-ovn needs -kubeconfig or an in-cluster service account: %w", err)
-	}
+	rc, err := restConfig("kube-ovn", cfg.Kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("newDataplane: %w", err)
 	}
