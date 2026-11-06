@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -45,9 +47,32 @@ func openStore(ctx context.Context, cfg Config) (repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openStore: %w", err)
 	}
+	// One commit is several ConfigMap calls; the client-go default of 5 QPS
+	// would hold every mutation for seconds.
+	rc.QPS, rc.Burst = storeQPS, storeBurst
 	c, err := client.New(rc, client.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("openStore: %w", err)
 	}
+	if err := probeNamespace(ctx, c, cfg.Store.Namespace); err != nil {
+		return nil, err
+	}
 	return newKubeRepo(ctx, c, cfg.Store.Namespace)
+}
+
+const (
+	storeQPS   = 100
+	storeBurst = 200
+)
+
+// probeNamespace refuses a namespace that cannot hold the store. A list in a
+// missing namespace succeeds, so this is a dry-run create.
+func probeNamespace(ctx context.Context, c client.Client, ns string) error {
+	ctx, cancel := callCtx(ctx)
+	defer cancel()
+	probe := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{GenerateName: "vws-net-probe-", Namespace: ns}}
+	if err := retried(func() error { return c.Create(ctx, probe, client.DryRunAll) }); err != nil {
+		return fmt.Errorf("store namespace %s: %w", ns, err)
+	}
+	return nil
 }

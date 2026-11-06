@@ -47,10 +47,10 @@ func TestOpenSelectsStoreFromConfig(t *testing.T) {
 	if err := open("", StoreConfig{Namespace: "vws-system", Kubeconfig: absent}); err == nil || isInvalid(err) {
 		t.Fatalf("absent kubeconfig: err %v", err)
 	}
-	// repair lists the store at Open, so an unreachable API server fails the
+	// Open probes the store namespace, so an unreachable API server fails the
 	// start instead of serving without state.
 	err = open("", StoreConfig{Namespace: "vws-system", Kubeconfig: writeKubeconfig(t)})
-	if err == nil || !strings.Contains(err.Error(), "list project") {
+	if err == nil || !strings.Contains(err.Error(), "store namespace vws-system") {
 		t.Fatalf("unreachable store: err %v", err)
 	}
 	svc, err := Open(ctx, Config{DatabasePath: db, AddressPool: mustP("198.51.100.0/24")})

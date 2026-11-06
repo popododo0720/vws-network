@@ -4,7 +4,9 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,5 +300,39 @@ func TestEnvtestStoreRoleIsEnough(t *testing.T) {
 	}
 	if got := storeObjects(t, admin); got[storeResource+"/vpc"] != 0 || got[storeResource+"/eip"] != 0 {
 		t.Fatalf("tombstones left after repair past the grace period: %v", got)
+	}
+}
+
+// TestEnvtestStoreRefusesMissingNamespace: a list in a missing namespace
+// succeeds, so without the start probe the service would be ready and fail
+// every write.
+func TestEnvtestStoreRefusesMissingNamespace(t *testing.T) {
+	env, _ := startEnv(t)
+	_, err := Open(context.Background(), Config{
+		Store:       StoreConfig{Namespace: "no-such-ns", Kubeconfig: kubeconfigFor(t, env)},
+		AddressPool: envPool,
+	})
+	if err == nil || !strings.Contains(err.Error(), "store namespace no-such-ns") {
+		t.Fatalf("missing namespace: err %v", err)
+	}
+}
+
+// TestEnvtestStoreAcceptsWithoutClientThrottle: ten creates through Open are
+// accepted in seconds. At the client-go default of 5 QPS they took about 7s
+// each.
+func TestEnvtestStoreAcceptsWithoutClientThrottle(t *testing.T) {
+	env, _ := startEnv(t)
+	ctx := context.Background()
+	svc := openKubeStore(t, kubeconfigFor(t, env))
+	defer closeOrFail(t, svc.Close)
+	start := time.Now()
+	for i := range 10 {
+		p := fmt.Sprintf("proj-%d", i)
+		if _, err := svc.CreateVPC(ctx, call(p, "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("10 creates accepted in %v, want under 10s", took)
 	}
 }
