@@ -41,7 +41,7 @@ Needed only when desired state lives in the Kubernetes store instead of `-db`. A
 
 | apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
-| "" (core) | configmaps | get, list, create, update, delete | `kubeRepo`: project heads, one object per resource and operation, idempotency key and pool address claims (`get`, `list`, `create`, `update`, `deleteAt`), `ping` (list) |
+| "" (core) | configmaps | get, list, create, update, delete | `kubeRepo`: project heads, one object per resource and operation, idempotency key, pool address and resource id claims (`get`, `list`, `create`, `update`, `deleteAt`), `ping` (list) |
 
 watch is not used.
 
