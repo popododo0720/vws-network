@@ -15,21 +15,7 @@ import (
 )
 
 func TestServiceAgainstStores(t *testing.T) {
-	openers := []struct {
-		name string
-		open func(t *testing.T) repository
-	}{
-		{name: "memory", open: func(t *testing.T) repository { return newMemRepo() }},
-		{name: "sqlite", open: func(t *testing.T) repository {
-			t.Helper()
-			repo, err := openSQLite(context.Background(), filepath.Join(t.TempDir(), "net.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { closeOrFail(t, repo.close) })
-			return repo
-		}},
-	}
+	openers := storeOpeners()
 	for _, opener := range openers {
 		t.Run(opener.name, func(t *testing.T) {
 			t.Run("overlap writes nothing", func(t *testing.T) { testOverlapWritesNothing(t, opener.open(t)) })

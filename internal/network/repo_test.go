@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
@@ -28,23 +31,47 @@ func TestPickRunnableHonorsLaneAndTime(t *testing.T) {
 	}
 }
 
-func TestRepositoryContract(t *testing.T) {
-	ctx := context.Background()
-	openers := []struct {
-		name string
-		open func(t *testing.T) repository
-	}{
-		{name: "memory", open: func(t *testing.T) repository { return newMemRepo() }},
+// storeOpener opens one empty repository for a test.
+type storeOpener struct {
+	name string
+	open func(t *testing.T) repository
+}
+
+// extraOpeners are stores that need a build tag, such as envtest.
+var extraOpeners []storeOpener
+
+// storeOpeners lists every repository the shared contract tests run against.
+func storeOpeners() []storeOpener {
+	return append([]storeOpener{
+		{name: "memory", open: func(*testing.T) repository { return newMemRepo() }},
 		{name: "sqlite", open: func(t *testing.T) repository {
 			t.Helper()
-			repo, err := openSQLite(ctx, filepath.Join(t.TempDir(), "net.db"))
+			repo, err := openSQLite(context.Background(), filepath.Join(t.TempDir(), "net.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { closeOrFail(t, repo.close) })
 			return repo
 		}},
+		{name: "kube-fake", open: func(t *testing.T) repository {
+			t.Helper()
+			return openKubeRepo(t, fake.NewClientBuilder().Build(), "vws-system")
+		}},
+	}, extraOpeners...)
+}
+
+func openKubeRepo(t *testing.T, c client.Client, ns string) *kubeRepo {
+	t.Helper()
+	repo, err := newKubeRepo(context.Background(), c, ns)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return repo
+}
+
+func TestRepositoryContract(t *testing.T) {
+	ctx := context.Background()
+	openers := storeOpeners()
 	for _, opener := range openers {
 		t.Run(opener.name, func(t *testing.T) {
 			repo := opener.open(t)
@@ -89,21 +116,7 @@ func TestRepositoryContract(t *testing.T) {
 func TestSettleTokenGuardsState(t *testing.T) {
 	ctx := context.Background()
 	cidr := netip.MustParsePrefix("10.0.0.0/16")
-	openers := []struct {
-		name string
-		open func(t *testing.T) repository
-	}{
-		{name: "memory", open: func(t *testing.T) repository { return newMemRepo() }},
-		{name: "sqlite", open: func(t *testing.T) repository {
-			t.Helper()
-			repo, err := openSQLite(ctx, filepath.Join(t.TempDir(), "net.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { closeOrFail(t, repo.close) })
-			return repo
-		}},
-	}
+	openers := storeOpeners()
 	for _, opener := range openers {
 		t.Run(opener.name, func(t *testing.T) {
 			repo := opener.open(t)
@@ -353,18 +366,9 @@ CREATE TABLE addresses (
 
 func TestRepoProjectIDs(t *testing.T) {
 	ctx := context.Background()
-	for name, open := range map[string]func(t *testing.T) repository{
-		"memory": func(*testing.T) repository { return newMemRepo() },
-		"sqlite": func(t *testing.T) repository {
-			r, err := openSQLite(ctx, filepath.Join(t.TempDir(), "p.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { closeOrFail(t, r.close) })
-			return r
-		},
-	} {
-		r := open(t)
+	for _, opener := range storeOpeners() {
+		name := opener.name
+		r := opener.open(t)
 		svc, err := newService(ctx, r, newFake(), mustP("198.51.100.0/24"))
 		if err != nil {
 			t.Fatal(err)
@@ -383,18 +387,9 @@ func TestRepoProjectIDs(t *testing.T) {
 
 func TestRepoPending(t *testing.T) {
 	ctx := context.Background()
-	for name, open := range map[string]func(t *testing.T) repository{
-		"memory": func(*testing.T) repository { return newMemRepo() },
-		"sqlite": func(t *testing.T) repository {
-			r, err := openSQLite(ctx, filepath.Join(t.TempDir(), "q.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { closeOrFail(t, r.close) })
-			return r
-		},
-	} {
-		r := open(t)
+	for _, opener := range storeOpeners() {
+		name := opener.name
+		r := opener.open(t)
 		svc, err := newService(ctx, r, newFake(), mustP("198.51.100.0/24"))
 		if err != nil {
 			t.Fatal(err)
