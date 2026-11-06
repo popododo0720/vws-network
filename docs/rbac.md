@@ -35,6 +35,16 @@ Needed only when `-kube-direct-networks` is given.
 - Removing or changing the association deletes that address's OvnFip.
 - If the VMI IP is briefly empty (during a restart), nothing changes; when a new IP is reported, a new OvnFip is created and the old one deleted. Unassociated VMIs are ignored. When the watch breaks it lists again after 1 second, and otherwise every 5 minutes.
 
+## Store Role (`-store-namespace`)
+
+Needed only when desired state lives in the Kubernetes store instead of `-db`. A Role in the store namespace, not a ClusterRole. `TestEnvtestStoreRoleIsEnough` runs the service and its start repair as a user that has only this Role (`storeRules`).
+
+| apiGroup | resource | verbs | Used by |
+| --- | --- | --- | --- |
+| "" (core) | configmaps | get, list, create, update, delete | `kubeRepo`: project heads, one object per resource and operation, idempotency key and pool address claims (`get`, `list`, `create`, `update`, `deleteAt`), `ping` (list) |
+
+watch is not used.
+
 ## Gateway node label (`-kube-gateway-nodes`)
 
 - With `-kube-gateway-nodes`, while at least one VPC exists, it gets those nodes every `-kube-gateway-recheck` (default 5s) and, if `ovn.kubernetes.io/external-gw` is not `true`, adds `true` with a merge patch. A kube-ovn-controller restart sets this label to `false`, which breaks SNAT. Pinning it with the `ovn-external-gw-config` ConfigMap breaks the underlay, so this approach is used.
