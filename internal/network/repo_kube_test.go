@@ -271,3 +271,32 @@ func TestKubeRepoAllocationReclaimsStrayClaim(t *testing.T) {
 		t.Fatalf("freed address: %v", err)
 	}
 }
+
+// TestKubeRepoOwnIDClaimIsStaleNotTaken: a claim on an id left by an earlier
+// commit of the same project, whose head swap is uncertain, is retryable for
+// that project and refused for another one until it turns stray.
+func TestKubeRepoOwnIDClaimIsStaleNotTaken(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().Build()
+	repo := openKubeRepo(t, c, "vws-system")
+	ref := idRef(resRef{kindVPC, "vpc-1"})
+	left := repo.configMap(ref.name(), storeID, projectSet("proj"),
+		map[string]string{"value": ref.Value, "project": "proj", "txn": "chg-lost"})
+	left.CreationTimestamp = metav1.NewTime(time.Now())
+	if err := c.Create(ctx, left); err != nil {
+		t.Fatal(err)
+	}
+	st := domain.State{VPCs: map[domain.VPCID]domain.VPC{
+		"vpc-1": {ID: "vpc-1", CIDR: netip.MustParsePrefix("10.0.0.0/16"), Status: domain.StatusPending},
+	}}
+	if err := repo.commit(ctx, commit{project: "proj", state: &st}); !errors.Is(err, errStale) {
+		t.Fatalf("own fresh claim = %v, want errStale", err)
+	}
+	if err := repo.commit(ctx, commit{project: "other", state: &st}); !errors.Is(err, errIDTaken) {
+		t.Fatalf("another project's fresh claim = %v, want errIDTaken", err)
+	}
+	repo.now = func() time.Time { return time.Now().Add(2 * kubeGrace) }
+	if err := repo.commit(ctx, commit{project: "proj", state: &st}); err != nil {
+		t.Fatalf("stray own claim = %v", err)
+	}
+}

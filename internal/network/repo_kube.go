@@ -137,13 +137,6 @@ func (c claimRef) name() string { return storeName(c.Store, c.Value) }
 func addrRef(a netip.Addr) claimRef { return claimRef{Store: storeAddress, Value: a.String()} }
 func idRef(r resRef) claimRef       { return claimRef{Store: storeID, Value: r.Kind + "/" + r.ID} }
 
-func (c claimRef) taken() error {
-	if c.Store == storeAddress {
-		return errAddressTaken
-	}
-	return errIDTaken
-}
-
 // claimsOf is every claim st holds.
 func claimsOf(st domain.State) map[claimRef]bool {
 	out := map[claimRef]bool{}
@@ -967,7 +960,7 @@ func (r *kubeRepo) stateChange(
 			}
 		}
 		if apierrors.IsAlreadyExists(err) {
-			return nil, giveBack(ref.taken())
+			return nil, giveBack(r.takenBy(ctx, p, ref))
 		}
 		if err != nil {
 			return nil, giveBack(err)
@@ -976,6 +969,23 @@ func (r *kubeRepo) stateChange(
 		cs.Take = append(cs.Take, ref)
 	}
 	return taken, nil
+}
+
+// takenBy is the error for a claim on ref that is still held. A resource id
+// claim of p itself was left by a commit of p whose head swap is uncertain or
+// still in flight, so it is errStale, not someone else's id.
+func (r *kubeRepo) takenBy(ctx context.Context, p domain.ProjectID, ref claimRef) error {
+	if ref.Store == storeAddress {
+		return errAddressTaken
+	}
+	cm, err := r.get(ctx, ref.name())
+	if err != nil {
+		return err
+	}
+	if cm == nil || cm.Data["project"] == string(p) {
+		return errStale
+	}
+	return errIDTaken
 }
 
 // swapHead writes cs into the head with CAS. A lost race is errStale.
@@ -1137,6 +1147,9 @@ func (r *kubeRepo) repair(ctx context.Context) error {
 			return err
 		}
 		for i := range claims {
+			if !stray(&claims[i], r.now()) {
+				continue
+			}
 			if _, err := r.reclaim(ctx, claimRef{Store: store, Value: claims[i].Data["value"]}); err != nil {
 				return err
 			}
