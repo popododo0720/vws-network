@@ -23,11 +23,13 @@ import (
 )
 
 // Config selects the durable store, the elastic IP pool, and the dataplane.
-// DatabasePath is one SQLite file. AddressPool is a canonical IPv4 prefix
+// The store is one SQLite file at DatabasePath or ConfigMaps in
+// Store.Namespace; exactly one is set. AddressPool is a canonical IPv4 prefix
 // from /16 through /30. Workers 0 starts two workers. A zero KubeOVN keeps
 // the in-process fake dataplane.
 type Config struct {
 	DatabasePath string
+	Store        StoreConfig
 	AddressPool  netip.Prefix
 	Workers      int
 	KubeOVN      KubeOVNConfig
@@ -55,15 +57,15 @@ type Service struct {
 	heartbeat atomic.Int64
 }
 
-// Open opens SQLite, requeues operations left running by the previous process,
+// Open opens the store, requeues operations left running by the previous process,
 // and starts workers. The dataplane is Kube-OVN when cfg.KubeOVN sets a
 // kubeconfig or any other Kube-OVN option, and the in-process fake otherwise.
 func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err
 	}
-	if cfg.DatabasePath == "" {
-		return nil, &domain.Error{Kind: domain.Invalid, Msg: "database path is required"}
+	if err := checkStore(cfg); err != nil {
+		return nil, err
 	}
 	if err := validatePoolInUnderlay(cfg.KubeOVN.Underlay, cfg.AddressPool); err != nil {
 		return nil, err
@@ -80,7 +82,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, err
 		}
 	}
-	repo, err := openSQLite(ctx, cfg.DatabasePath)
+	repo, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

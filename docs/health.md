@@ -6,7 +6,7 @@ Names: `""`, `google.longrunning.Operations`, `vws.network.v1.AddressService`, `
 
 The status is SERVING when all three of these hold. The check runs every 5 seconds with a 2 second budget.
 
-1. SQLite answers `SELECT 1`.
+1. The store answers. SQLite (`-db`) answers `SELECT 1`. The Kubernetes store (`-store-namespace`) lists one ConfigMap in its namespace.
 2. A worker loop went round within the last minute.
 3. The dataplane answers a read. The fake always does. Kube-OVN must return the `-kube-external-subnet` Subnet.
 

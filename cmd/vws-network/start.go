@@ -10,13 +10,21 @@ import (
 	"github.com/popododo0720/vws-network/internal/network"
 )
 
-const usage = "usage: vws-network -db PATH -pool CIDR [-listen ADDR] [-kubeconfig PATH] [-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] [-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] -kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] [-kube-direct-networks JSON -kube-direct-nad-namespace NS]]"
+const usage = "usage: vws-network (-db PATH | -store-namespace NS) -pool CIDR [-listen ADDR] [-kubeconfig PATH] " +
+	"[-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] " +
+	"[-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] " +
+	"-kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] " +
+	"[-kube-direct-networks JSON -kube-direct-nad-namespace NS]]"
 
-// parseStart checks the required flags before anything opens. -pool has no
-// default: the site's elastic IP range must be given explicitly.
-func parseStart(db, pool string) (netip.Prefix, error) {
-	if db == "" {
-		return netip.Prefix{}, errors.New("-db is required")
+// parseStart checks the required flags before anything opens. Exactly one
+// of -db and -store-namespace picks the store. -pool has no default: the
+// site's elastic IP range must be given explicitly.
+func parseStart(db, storeNamespace, pool string) (netip.Prefix, error) {
+	if db == "" && storeNamespace == "" {
+		return netip.Prefix{}, errors.New("-db or -store-namespace is required")
+	}
+	if db != "" && storeNamespace != "" {
+		return netip.Prefix{}, errors.New("-db and -store-namespace cannot both be set")
 	}
 	if pool == "" {
 		return netip.Prefix{}, errors.New("-pool is required: set the site's elastic IP CIDR (there is no default)")
