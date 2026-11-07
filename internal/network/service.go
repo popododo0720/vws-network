@@ -13,7 +13,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,9 +23,10 @@ import (
 
 // Config selects the durable store, the elastic IP pool, and the dataplane.
 // The store is one SQLite file at DatabasePath or ConfigMaps in
-// Store.Namespace; exactly one is set. AddressPool is a canonical IPv4 prefix
-// from /16 through /30. Workers 0 starts two workers. A zero KubeOVN keeps
-// the in-process fake dataplane.
+// Store.Namespace; exactly one is set. Many replicas may share the Kubernetes
+// store; only the holder of its Lease runs the workers. AddressPool is a
+// canonical IPv4 prefix from /16 through /30. Workers 0 starts two workers. A
+// zero KubeOVN keeps the in-process fake dataplane.
 type Config struct {
 	DatabasePath string
 	Store        StoreConfig
@@ -53,13 +53,21 @@ type Service struct {
 	restored func(ctx context.Context, nodes []string)
 	// direct are the direct networks, read-only and shared by every project.
 	direct []domain.Subnet
+	// loops are the workers and the reconcile loops. They run only while
+	// this process is the one writer of the store.
+	loops []func(context.Context)
+	// leading is true while the loops run.
+	leading atomic.Bool
 	// heartbeat is the unix nanosecond time a worker loop last went round.
 	heartbeat atomic.Int64
 }
 
-// Open opens the store, requeues operations left running by the previous process,
-// and starts workers. The dataplane is Kube-OVN when cfg.KubeOVN sets a
-// kubeconfig or any other Kube-OVN option, and the in-process fake otherwise.
+// Open opens the store and starts the workers and reconcile loops. On SQLite
+// they start at once, after operations left running by the previous process
+// go back to pending. On the Kubernetes store they run only while this
+// replica holds the Lease, and each new holder requeues first. The dataplane
+// is Kube-OVN when cfg.KubeOVN sets a kubeconfig or any other Kube-OVN
+// option, and the in-process fake otherwise.
 func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err
@@ -82,7 +90,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, err
 		}
 	}
-	repo, err := openStore(ctx, cfg)
+	repo, el, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -90,54 +98,73 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if workers == 0 {
 		workers = 2
 	}
-	svc, err := start(ctx, repo, measured{dp}, cfg.AddressPool, workers)
+	svc, err := build(repo, measured{dp}, cfg.AddressPool, workers)
+	if err == nil {
+		svc.direct = directSubnets(cfg.KubeOVN.Direct)
+		svc.addReconcilers(ctx, dp, cfg.KubeOVN)
+		err = svc.launch(ctx, el)
+	}
 	if err != nil {
 		if cerr := repo.close(); cerr != nil {
 			err = errors.Join(err, cerr)
 		}
 		return nil, err
 	}
-	svc.direct = directSubnets(cfg.KubeOVN.Direct)
-	if k, ok := dp.(*kubeOVN); ok && len(k.gatewayNodes) > 0 {
-		period := cfg.KubeOVN.GatewayRecheck
-		if period <= 0 {
-			period = defaultGatewayRecheck
-		}
-		svc.startLoop(func(ctx context.Context) { svc.gatewayLoop(ctx, k, period) })
-	} else if ok {
-		if gatewayLabelUnkept(k) {
-			slog.Default().LogAttrs(ctx, slog.LevelWarn, gatewayUnkeptWarning, slog.String("label", gatewayLabel))
-		}
-	}
-	if k, ok := dp.(*kubeOVN); ok && k.vmNamespace != "" && k.w != nil {
-		svc.startLoop(func(ctx context.Context) { svc.vmiLoop(ctx, k) })
-	}
 	return svc, nil
 }
 
-// startLoop runs loop until Close, which stops it before the workers and the
-// store.
-//
-//nolint:contextcheck // the loop outlives the Open context and stops through Close
-func (s *Service) startLoop(loop func(context.Context)) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		loop(ctx)
-	}()
-	prev := s.stop
-	s.stop = func() {
-		cancel()
-		<-done
-		if prev != nil {
-			prev()
+// addReconcilers adds the Kube-OVN loops that run beside the workers.
+func (s *Service) addReconcilers(ctx context.Context, dp dataplane, cfg KubeOVNConfig) {
+	k, ok := dp.(*kubeOVN)
+	if !ok {
+		return
+	}
+	if len(k.gatewayNodes) > 0 {
+		period := cfg.GatewayRecheck
+		if period <= 0 {
+			period = defaultGatewayRecheck
 		}
+		s.loops = append(s.loops, func(ctx context.Context) { s.gatewayLoop(ctx, k, period) })
+	} else if gatewayLabelUnkept(k) {
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, gatewayUnkeptWarning, slog.String("label", gatewayLabel))
+	}
+	if k.vmNamespace != "" && k.w != nil {
+		s.loops = append(s.loops, func(ctx context.Context) { s.vmiLoop(ctx, k) })
 	}
 }
 
-// Close stops workers and closes the store. A later Open requeues any claim
-// that was still running, which is the same path a crash takes.
+// launch starts the loops under el until Close. A nil el means this process
+// is the only writer of the store: operations left running go back to
+// pending now, and the loops start at once.
+//
+//nolint:contextcheck // the loops outlive the Open context and stop through Close
+func (s *Service) launch(ctx context.Context, el elector) error {
+	run := s.takeOver
+	if el == nil {
+		if err := s.repo.requeue(ctx); err != nil {
+			return err
+		}
+		el, run = func(ctx context.Context, lead func(context.Context)) { lead(ctx) }, s.work
+	}
+	if len(s.loops) == 0 {
+		return nil
+	}
+	bg, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		el(bg, run)
+	}()
+	s.stop = func() {
+		cancel()
+		<-done
+	}
+	return nil
+}
+
+// Close stops the loops, gives up the Lease, and closes the store. The next
+// Lease holder, or a later Open on SQLite, requeues any claim that was still
+// running, which is the same path a crash takes.
 func (s *Service) Close() error {
 	if s.stop != nil {
 		s.stop()
@@ -161,8 +188,6 @@ func logError(format string, args ...any) {
 // service is not ready. One round can include a dataplane call.
 const staleHeartbeat = time.Minute
 
-// Ready reports whether the service can do work: the store answers, the worker
-// loops go round, and the dataplane answers a read. Liveness is not this.
 // PendingOperations is the number of operations not yet succeeded or failed,
 // for the vws.queue.depth metric. A store error is logged and reads as 0.
 //
@@ -180,11 +205,15 @@ func (s *Service) PendingOperations() int64 {
 	return n
 }
 
+// Ready reports whether the service can do work: the store answers, the worker
+// loops go round while this replica holds the Lease, and the dataplane
+// answers a read. A replica that does not hold the Lease serves reads and
+// accepts writes, so it is ready too. Liveness is not this.
 func (s *Service) Ready(ctx context.Context) error {
 	if err := s.repo.ping(ctx); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
-	if s.stop != nil {
+	if s.leading.Load() {
 		if last := time.Unix(0, s.heartbeat.Load()); s.now().Sub(last) > staleHeartbeat {
 			return fmt.Errorf("workers: no round since %s", last.Format(time.RFC3339))
 		}
@@ -195,12 +224,20 @@ func (s *Service) Ready(ctx context.Context) error {
 	return nil
 }
 
-//nolint:contextcheck // workers outlive the Open context and stop through Close
 func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix, workers int) (*Service, error) {
-	if err := validatePool(pool); err != nil {
+	s, err := build(repo, dp, pool, workers)
+	if err != nil {
 		return nil, err
 	}
-	if err := repo.requeue(ctx); err != nil {
+	if err := s.launch(ctx, nil); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// build makes a Service with workers worker loops and starts nothing.
+func build(repo repository, dp dataplane, pool netip.Prefix, workers int) (*Service, error) {
+	if err := validatePool(pool); err != nil {
 		return nil, err
 	}
 	s := &Service{
@@ -215,21 +252,8 @@ func start(ctx context.Context, repo repository, dp dataplane, pool netip.Prefix
 		logf:        logError,
 		restored:    logRestored,
 	}
-	if workers > 0 {
-		workerCtx, cancel := context.WithCancel(context.Background())
-		var wg sync.WaitGroup
-		for i := 0; i < workers; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				s.loop(workerCtx)
-			}()
-		}
-		s.heartbeat.Store(s.now().UnixNano())
-		s.stop = func() {
-			cancel()
-			wg.Wait()
-		}
+	for range workers {
+		s.loops = append(s.loops, s.loop)
 	}
 	return s, nil
 }

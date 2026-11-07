@@ -26,6 +26,11 @@ var storeRules = []rbacv1.PolicyRule{
 		Resources: []string{"configmaps"},
 		Verbs:     []string{"get", "list", "create", "update", "delete"},
 	},
+	{
+		APIGroups: []string{"coordination.k8s.io"},
+		Resources: []string{"leases"},
+		Verbs:     []string{"get", "create", "update"},
+	},
 }
 
 var envPool = mustP("10.78.0.128/25")

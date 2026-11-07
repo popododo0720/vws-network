@@ -37,11 +37,12 @@ Needed only when `-kube-direct-networks` is given.
 
 ## Store Role (`-store-namespace`)
 
-Needed only when desired state lives in the Kubernetes store instead of `-db`. A Role in the store namespace, not a ClusterRole. `TestEnvtestStoreRoleIsEnough` runs the service and its start repair as a user that has only this Role (`storeRules`).
+Needed only when desired state lives in the Kubernetes store instead of `-db`. A Role in the store namespace, not a ClusterRole. `TestEnvtestStoreRoleIsEnough` runs the service and its start repair, and `TestEnvtestLeaseOneWorkerAndHandoff` and `TestEnvtestLeaseHolderKilled` run two replicas and the Lease election, as a user that has only this Role (`storeRules`).
 
 | apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
 | "" (core) | configmaps | get, list, create, update, delete | `kubeRepo`: project heads, one object per resource and operation, idempotency key, pool address and resource id claims (`get`, `list`, `create`, `update`, `deleteAt`), `ping` (list) |
+| coordination.k8s.io | leases | get, create, update | `leaseElector`: Lease `vws-network`, whose holder is the one replica that runs the workers and the reconcile loops |
 
 watch is not used.
 
