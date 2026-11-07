@@ -227,12 +227,12 @@ func TestKubeRepoKeepsClaimsWhenHeadSwapIsUncertain(t *testing.T) {
 func TestKubeRepoRefusesResourceTooLargeBeforeSwap(t *testing.T) {
 	ctx := context.Background()
 	repo := openKubeRepo(t, fake.NewClientBuilder().Build(), "vws-system")
-	g := domain.SecurityGroup{ID: "sg-1", VPC: "vpc-1", Name: strings.Repeat("g", 140<<10)}
+	g := domain.SecurityGroup{ID: "sg-1", VPC: "vpc-1", Name: strings.Repeat("g", 100<<10)}
 	st := domain.State{Groups: map[domain.SecurityGroupID]domain.SecurityGroup{"sg-1": g}}
 	if err := repo.commit(ctx, commit{project: "proj", state: &st}); err != nil {
 		t.Fatal(err)
 	}
-	g.Description = "changed"
+	g.Description = strings.Repeat("d", 40<<10)
 	next := domain.State{Groups: map[domain.SecurityGroupID]domain.SecurityGroup{"sg-1": g}}
 	var de *domain.Error
 	err := repo.commit(ctx, commit{project: "proj", base: 1, state: &next})

@@ -69,6 +69,9 @@ const (
 
 	// kubeObjectLimit is the size limit of one written object (vws-deploy#478).
 	kubeObjectLimit = 256 << 10
+	// kubeGrowth is how much a worker change may add to a document a request
+	// wrote, such as a status or a revoke mark.
+	kubeGrowth = 1 << 10
 	// kubeGrace is how long a tombstone or a stray address claim is kept, so
 	// a slow writer of an older change still finds it.
 	kubeGrace = 10 * time.Minute
@@ -244,12 +247,14 @@ func (r *kubeRepo) configMap(name, store string, lbl labels.Set, data map[string
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.ns, Labels: l}, Data: data}
 }
 
-func fitsLimit(cm *corev1.ConfigMap) error {
+func fitsLimit(cm *corev1.ConfigMap) error { return fitsWithin(cm, kubeObjectLimit) }
+
+func fitsWithin(cm *corev1.ConfigMap, limit int) error {
 	b, err := json.Marshal(cm)
 	if err != nil {
 		return fmt.Errorf("encode configmap %s: %w", cm.Name, err)
 	}
-	if len(b) > kubeObjectLimit {
+	if len(b) > limit {
 		return fmt.Errorf("%w: %s is %d bytes", errObjectTooLarge, cm.Name, len(b))
 	}
 	return nil
@@ -820,7 +825,7 @@ func (r *kubeRepo) commitOnce(ctx context.Context, c commit) error {
 	}
 	var taken []*corev1.ConfigMap
 	if c.state != nil {
-		if taken, err = r.stateChange(ctx, c.project, cur, *c.state, &cs); err != nil {
+		if taken, err = r.stateChange(ctx, c.project, cur, *c.state, c.settle == nil, &cs); err != nil {
 			return err
 		}
 	}
@@ -832,6 +837,9 @@ func (r *kubeRepo) commitOnce(ctx context.Context, c commit) error {
 			for _, cm := range taken {
 				err = errors.Join(err, r.deleteAt(ctx, cm))
 			}
+		}
+		if errors.Is(err, errObjectTooLarge) {
+			return &domain.Error{Kind: domain.Invalid, Msg: "change is too large to store"}
 		}
 		return err
 	}
@@ -898,8 +906,12 @@ func (r *kubeRepo) opChange(ctx context.Context, c commit, cs *changeSet) (bool,
 
 // stateChange adds the resource writes from cur to next to cs and takes every
 // pool address and resource id next holds that cur does not. It returns the claims it took.
+//
+// A request change (admit) must leave room for the next change of the same
+// document: the resource object holds a document and the one before it, so a
+// document that fits only once could never be settled, revoked or deleted.
 func (r *kubeRepo) stateChange(
-	ctx context.Context, p domain.ProjectID, cur, next domain.State, cs *changeSet,
+	ctx context.Context, p domain.ProjectID, cur, next domain.State, admit bool, cs *changeSet,
 ) ([]*corev1.ConfigMap, error) {
 	before, err := documents(cur)
 	if err != nil {
@@ -913,7 +925,11 @@ func (r *kubeRepo) stateChange(
 		if before[ref] == doc {
 			continue
 		}
-		if err := fitsLimit(r.resourceMap(p, resPut{resRef: ref, State: doc}, before[ref])); err != nil {
+		prev, limit := before[ref], kubeObjectLimit
+		if admit {
+			prev, limit = doc, kubeObjectLimit-kubeGrowth
+		}
+		if err := fitsWithin(r.resourceMap(p, resPut{resRef: ref, State: doc}, prev), limit); err != nil {
 			return nil, &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("%s %s is too large to store", ref.Kind, ref.ID)}
 		}
 		cs.Puts = append(cs.Puts, resPut{resRef: ref, State: doc})
