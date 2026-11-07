@@ -318,3 +318,89 @@ func TestImportLargeProject(t *testing.T) {
 	}
 	largestObjects(t, c)
 }
+
+// TestImportRefusesBeforeWriting finds what the store would refuse while it
+// plans, so a refused import writes nothing at all.
+func TestImportRefusesBeforeWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, src *sqliteRepo, dst *kubeRepo)
+		want  string
+	}{
+		{"id in two projects of the file", func(t *testing.T, src *sqliteRepo, _ *kubeRepo) {
+			t.Helper()
+			ctx := context.Background()
+			if _, err := src.db.ExecContext(ctx,
+				`INSERT INTO projects (id, version, state) SELECT 'a2002', version, state FROM projects`); err != nil {
+				t.Fatal(err)
+			}
+		}, "differs: vpc vpc-1: held by projects a1001 and a2002 in the file"},
+		{"address of another project in the store", func(t *testing.T, src *sqliteRepo, dst *kubeRepo) {
+			t.Helper()
+			ctx := context.Background()
+			st, _, err := src.load(ctx, upgradeFixtureProject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eip := st.ElasticIPs["eipalloc-1"]
+			eip.ID = "eipalloc-other"
+			other := domain.State{ElasticIPs: map[domain.ElasticIPID]domain.ElasticIP{eip.ID: eip}}
+			if err := dst.commit(ctx, commit{project: "a2002", state: &other}); err != nil {
+				t.Fatal(err)
+			}
+		}, "held by project a2002 in the store"},
+		{"document too large for the store", func(t *testing.T, src *sqliteRepo, _ *kubeRepo) {
+			t.Helper()
+			ctx := context.Background()
+			st, _, err := src.load(ctx, upgradeFixtureProject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vpc := st.VPCs["vpc-1"]
+			vpc.Description = strings.Repeat("x", 200<<10)
+			st.VPCs[vpc.ID] = vpc
+			blob, err := domain.MarshalState(st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := src.db.ExecContext(ctx, `UPDATE projects SET state = ?`, blob); err != nil {
+				t.Fatal(err)
+			}
+		}, "differs: project a1001 vpc vpc-1: too large for the store"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, _ := openFixtureCopy(t)
+			dst := openKubeRepo(t, fake.NewClientBuilder().Build(), "vws-system")
+			tc.setup(t, src, dst)
+			report, err := runImport(t, src, dst, ImportWrite)
+			if !errors.Is(err, ErrImportDiffers) {
+				t.Fatalf("import = %v\n%s", err, report)
+			}
+			wantLine(t, report, tc.want)
+			wantLine(t, report, "writes: 0")
+			if _, ok, err := dst.key(context.Background(), upgradeFixtureProject, "key-pending"); err != nil || ok {
+				t.Fatalf("operation written ok %v err %v", ok, err)
+			}
+		})
+	}
+}
+
+// TestSQLiteCurrentRefusesOldSchema keeps a dry run or verify from migrating
+// the file: an older schema is refused and the file is left as it was.
+func TestSQLiteCurrentRefusesOldSchema(t *testing.T) {
+	ctx := context.Background()
+	src, path := openFixtureCopy(t)
+	if err := sqliteCurrent(ctx, path); err != nil {
+		t.Fatalf("current schema = %v", err)
+	}
+	if _, err := src.db.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteCurrent(ctx, path); kind(err) != domain.Invalid {
+		t.Fatalf("old schema = %v", err)
+	}
+	var version int
+	if err := src.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("user_version %d err %v, want 1", version, err)
+	}
+}

@@ -32,8 +32,9 @@ var ErrImportDiffers = errors.New("network: the kubernetes store differs from th
 
 // ImportSQLite copies the projects, operations, idempotency keys and pool
 // addresses of the SQLite file from into the Kubernetes store, and prints one
-// line per object to out. Run it while no service uses either store. A file of
-// an older schema is migrated in place first, as a start on it would.
+// line per object to out. Run it while no service uses either store: it holds
+// no Lease. A write run migrates a file of an older schema in place first, as
+// a start on it would; a dry run or verify refuses one instead.
 func ImportSQLite(ctx context.Context, from string, store StoreConfig, mode ImportMode, out io.Writer) error {
 	if from == "" {
 		return &domain.Error{Kind: domain.Invalid, Msg: "the sqlite file is required"}
@@ -47,6 +48,11 @@ func ImportSQLite(ctx context.Context, from string, store StoreConfig, mode Impo
 	c, _, err := storeClient(ctx, store)
 	if err != nil {
 		return err
+	}
+	if mode != ImportWrite {
+		if err := sqliteCurrent(ctx, from); err != nil {
+			return err
+		}
 	}
 	src, err := openSQLite(ctx, from)
 	if err != nil {
@@ -95,7 +101,8 @@ type storeView struct {
 	states    map[domain.ProjectID]domain.State
 	keys      map[opKey]string
 	jobs      map[string]job
-	addresses map[netip.Addr]bool
+	addresses map[netip.Addr]domain.ProjectID
+	ids       map[string]domain.ProjectID
 }
 
 type opKey struct {
@@ -108,7 +115,8 @@ type opKey struct {
 func readStore(ctx context.Context, r *kubeRepo) (storeView, []string, error) {
 	v := storeView{
 		heads: map[domain.ProjectID]head{}, states: map[domain.ProjectID]domain.State{},
-		keys: map[opKey]string{}, jobs: map[string]job{}, addresses: map[netip.Addr]bool{},
+		keys: map[opKey]string{}, jobs: map[string]job{}, addresses: map[netip.Addr]domain.ProjectID{},
+		ids: map[string]domain.ProjectID{},
 	}
 	var unsettled []string
 	heads, err := r.list(ctx, storeHead, nil)
@@ -163,7 +171,14 @@ func readStore(ctx context.Context, r *kubeRepo) (storeView, []string, error) {
 		if err != nil {
 			return v, nil, fmt.Errorf("network: address claim %s is corrupt", cm.Name)
 		}
-		v.addresses[a] = true
+		v.addresses[a] = domain.ProjectID(cm.Data["project"])
+	}
+	ids, err := r.list(ctx, storeID, nil)
+	if err != nil {
+		return v, nil, err
+	}
+	for _, cm := range ids {
+		v.ids[cm.Data["value"]] = domain.ProjectID(cm.Data["project"])
 	}
 	return v, unsettled, nil
 }
@@ -176,7 +191,7 @@ type importPlan struct {
 	count struct{ projects, operations, addresses int }
 }
 
-func planImport(ctx context.Context, src *sqliteRepo, view storeView) (importPlan, error) {
+func planImport(ctx context.Context, src *sqliteRepo, dst *kubeRepo, view storeView) (importPlan, error) {
 	var plan importPlan
 	ids, err := src.projectIDs(ctx)
 	if err != nil {
@@ -184,6 +199,7 @@ func planImport(ctx context.Context, src *sqliteRepo, view storeView) (importPla
 	}
 	inFile := map[domain.ProjectID]bool{}
 	fileAddrs := map[netip.Addr]domain.ProjectID{}
+	fileIDs := map[resRef]domain.ProjectID{}
 	for _, p := range ids {
 		inFile[p] = true
 		st, _, err := src.load(ctx, p)
@@ -192,6 +208,13 @@ func planImport(ctx context.Context, src *sqliteRepo, view storeView) (importPla
 		}
 		for a := range addressesOf(st) {
 			fileAddrs[a] = p
+		}
+		for ref := range resourcesOf(st) {
+			if q, ok := fileIDs[ref]; ok {
+				plan.diffs = append(plan.diffs, fmt.Sprintf("%s %s: held by projects %s and %s in the file",
+					ref.Kind, ref.ID, q, p))
+			}
+			fileIDs[ref] = p
 		}
 		if _, ok := view.heads[p]; !ok && len(resourcesOf(st)) == 0 {
 			plan.steps = append(plan.steps, importStep{project: p})
@@ -203,6 +226,9 @@ func planImport(ctx context.Context, src *sqliteRepo, view storeView) (importPla
 		}
 		plan.steps = append(plan.steps, steps...)
 		plan.diffs = append(plan.diffs, diffs...)
+		for _, s := range steps {
+			plan.diffs = append(plan.diffs, refusals(dst, view, s)...)
+		}
 	}
 	for p := range view.heads {
 		if !inFile[p] {
@@ -218,6 +244,22 @@ func planImport(ctx context.Context, src *sqliteRepo, view storeView) (importPla
 	}
 	slices.Sort(plan.diffs)
 	return plan, nil
+}
+
+// refusals are the reasons the store would refuse the commit of s, found
+// before anything is written: an id another project holds, or a document
+// with no room for its next change.
+func refusals(dst *kubeRepo, view storeView, s importStep) []string {
+	var out []string
+	if q, ok := view.ids[idRef(*s.ref).Value]; ok && q != s.project {
+		out = append(out, fmt.Sprintf("project %s %s %s: held by project %s in the store",
+			s.project, s.ref.Kind, s.ref.ID, q))
+	}
+	if err := fitsWithin(dst.resourceMap(s.project, resPut{resRef: *s.ref, State: s.doc}, s.doc),
+		kubeObjectLimit-kubeGrowth); err != nil {
+		out = append(out, fmt.Sprintf("project %s %s %s: too large for the store", s.project, s.ref.Kind, s.ref.ID))
+	}
+	return out
 }
 
 // resourcePlan is one step per resource of want the store lacks, so each
@@ -264,10 +306,13 @@ func planAddresses(
 	}
 	for a := range used {
 		p, ok := holder[a]
+		q, held := view.addresses[a]
 		switch {
 		case !ok:
 			plan.diffs = append(plan.diffs, fmt.Sprintf("address %s: no project of the file holds it", a))
-		case !view.addresses[a] && !importsAddress(plan.steps, a):
+		case held && q != p:
+			plan.diffs = append(plan.diffs, fmt.Sprintf("project %s address %s: held by project %s in the store", p, a, q))
+		case !held && !importsAddress(plan.steps, a):
 			plan.diffs = append(plan.diffs, fmt.Sprintf("project %s address %s: missing in the store", p, a))
 		}
 	}
@@ -347,7 +392,7 @@ func importStore(ctx context.Context, src *sqliteRepo, dst *kubeRepo, mode Impor
 	if err != nil {
 		return err
 	}
-	plan, err := planImport(ctx, src, view)
+	plan, err := planImport(ctx, src, dst, view)
 	if err != nil {
 		return err
 	}
