@@ -44,7 +44,7 @@ func TestEnvtestImportSQLiteFixture(t *testing.T) {
 		mode ImportMode
 		want string
 	}{
-		{ImportWrite, "missing: 4, writes: 4"},
+		{ImportWrite, "missing: 8, writes: 8"},
 		{ImportVerify, "differences: 0, missing: 0, writes: 0"},
 		{ImportWrite, "differences: 0, missing: 0, writes: 0"},
 	} {
@@ -73,7 +73,7 @@ func TestEnvtestImportSQLiteFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d, err := documentDiffs(upgradeFixtureProject, want, got); err != nil || len(d) > 0 {
-		t.Fatalf("documents differ %v err %v", d, err)
+	if steps, diffs, err := resourcePlan(upgradeFixtureProject, want, got); err != nil || len(steps)+len(diffs) > 0 {
+		t.Fatalf("documents differ: %d missing, %v, err %v", len(steps), diffs, err)
 	}
 }
