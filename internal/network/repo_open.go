@@ -49,18 +49,8 @@ func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 		repo, err := openSQLite(ctx, cfg.DatabasePath)
 		return repo, nil, err
 	}
-	rc, err := restConfig("kubernetes store", cfg.Store.Kubeconfig)
+	c, rc, err := storeClient(ctx, cfg.Store)
 	if err != nil {
-		return nil, nil, fmt.Errorf("openStore: %w", err)
-	}
-	// One commit is several ConfigMap calls; the client-go default of 5 QPS
-	// would hold every mutation for seconds.
-	rc.QPS, rc.Burst = storeQPS, storeBurst
-	c, err := client.New(rc, client.Options{})
-	if err != nil {
-		return nil, nil, fmt.Errorf("openStore: %w", err)
-	}
-	if err := probeNamespace(ctx, c, cfg.Store.Namespace); err != nil {
 		return nil, nil, err
 	}
 	el, err := leaseElector(ctx, rest.CopyConfig(rc), cfg.Store.Namespace, cfg.Store.lease)
@@ -72,6 +62,26 @@ func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 		return nil, nil, err
 	}
 	return repo, el, nil
+}
+
+// storeClient is the client of the Kubernetes store, refused when its
+// namespace cannot hold the store.
+func storeClient(ctx context.Context, store StoreConfig) (client.Client, *rest.Config, error) {
+	rc, err := restConfig("kubernetes store", store.Kubeconfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("storeClient: %w", err)
+	}
+	// One commit is several ConfigMap calls; the client-go default of 5 QPS
+	// would hold every mutation for seconds.
+	rc.QPS, rc.Burst = storeQPS, storeBurst
+	c, err := client.New(rc, client.Options{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("storeClient: %w", err)
+	}
+	if err := probeNamespace(ctx, c, store.Namespace); err != nil {
+		return nil, nil, err
+	}
+	return c, rc, nil
 }
 
 const (
