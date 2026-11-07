@@ -404,7 +404,8 @@ func settleAllowed(ctx context.Context, tx *sql.Tx, j job) (bool, error) {
 
 func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 	var ver int64
-	err := tx.QueryRowContext(ctx, `SELECT version FROM projects WHERE id = ?`, string(c.project)).Scan(&ver)
+	var blob []byte
+	err := tx.QueryRowContext(ctx, `SELECT version, state FROM projects WHERE id = ?`, string(c.project)).Scan(&ver, &blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		ver = 0
 	} else if err != nil {
@@ -412,6 +413,15 @@ func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 	}
 	if ver != c.base {
 		return errStale
+	}
+	var cur domain.State
+	if blob != nil {
+		if cur, err = domain.UnmarshalState(blob); err != nil {
+			return fmt.Errorf("network: project %s: %w", c.project, err)
+		}
+	}
+	if err := idsFree(ctx, tx, c.project, addedResources(cur, *c.state)); err != nil {
+		return err
 	}
 	for addr := range addressesOf(*c.state) {
 		var owner string
@@ -426,7 +436,7 @@ func writeState(ctx context.Context, tx *sql.Tx, c commit) error {
 			return errAddressTaken
 		}
 	}
-	blob, err := domain.MarshalState(*c.state)
+	blob, err = domain.MarshalState(*c.state)
 	if err != nil {
 		return err
 	}
@@ -443,6 +453,40 @@ ON CONFLICT(id) DO UPDATE SET version = excluded.version, state = excluded.state
 		if _, err := tx.ExecContext(ctx, `INSERT INTO addresses (addr, project) VALUES (?, ?)`, addr.String(), string(c.project)); err != nil {
 			return fmt.Errorf("writeState: %w", err)
 		}
+	}
+	return nil
+}
+
+// idsFree is errIDTaken when another project holds one of added. Only a
+// commit that adds a resource reads the other projects.
+func idsFree(ctx context.Context, tx *sql.Tx, project domain.ProjectID, added []resRef) error {
+	if len(added) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM projects WHERE id != ?`, string(project))
+	if err != nil {
+		return fmt.Errorf("idsFree: %w", err)
+	}
+	defer closeLogged(ctx, rows)
+	for rows.Next() {
+		var id string
+		var blob []byte
+		if err := rows.Scan(&id, &blob); err != nil {
+			return fmt.Errorf("idsFree: %w", err)
+		}
+		st, err := domain.UnmarshalState(blob)
+		if err != nil {
+			return fmt.Errorf("network: project %s: %w", id, err)
+		}
+		held := resourcesOf(st)
+		for _, ref := range added {
+			if held[ref] {
+				return errIDTaken
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("idsFree: %w", err)
 	}
 	return nil
 }

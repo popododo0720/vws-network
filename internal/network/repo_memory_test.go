@@ -143,6 +143,9 @@ func (r *memRepo) commit(ctx context.Context, c commit) error {
 	if c.state != nil && conflictingAddress(r.addresses, c.project, *c.state) {
 		return errAddressTaken
 	}
+	if c.state != nil && r.idTaken(c.project, addedResources(proj.state, *c.state)) {
+		return errIDTaken
+	}
 	if c.enqueue != nil {
 		for _, j := range r.jobs {
 			if j.op.Project == c.project && j.op.Key == c.enqueue.op.Key {
@@ -251,6 +254,21 @@ func (r *memRepo) requeue(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (r *memRepo) idTaken(project domain.ProjectID, added []resRef) bool {
+	for p, other := range r.projects {
+		if p == project {
+			continue
+		}
+		held := resourcesOf(other.state)
+		for _, ref := range added {
+			if held[ref] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func conflictingAddress(existing map[netip.Addr]domain.ProjectID, project domain.ProjectID, st domain.State) bool {

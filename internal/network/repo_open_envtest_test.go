@@ -208,6 +208,7 @@ func TestEnvtestStoreReplayLeavesOneObject(t *testing.T) {
 		storeHead:                1,
 		storeKey:                 1,
 		storeOp:                  1,
+		storeID:                  2,
 		storeResource + "/vpc":   1,
 		storeResource + "/group": 1,
 	}
@@ -293,6 +294,9 @@ func TestEnvtestStoreRoleIsEnough(t *testing.T) {
 	}
 	if got := storeObjects(t, admin)[storeAddress]; got != 0 {
 		t.Fatalf("%d address claims left after release", got)
+	}
+	if got := storeObjects(t, admin)[storeID]; got != 0 {
+		t.Fatalf("%d resource id claims left after delete", got)
 	}
 	later := &kubeRepo{c: c, ns: envNamespace, now: func() time.Time { return time.Now().Add(2 * kubeGrace) }}
 	if err := later.repair(ctx); err != nil {

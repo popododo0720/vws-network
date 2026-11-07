@@ -13,11 +13,14 @@ var (
 	errStale        = errors.New("network: project version moved")
 	errKeyTaken     = errors.New("network: idempotency key taken")
 	errAddressTaken = errors.New("network: pool address taken")
+	errIDTaken      = errors.New("network: resource id taken")
 	errLostClaim    = errors.New("network: claim token mismatch")
 )
 
 // repository is the only store of desired state, operations, and pool addresses.
-// memRepo and sqliteRepo both implement it. A commit is atomic.
+// memRepo, sqliteRepo and kubeRepo implement it. A commit is atomic. A commit
+// whose state adds a resource id another project holds is errIDTaken, because
+// Kube-OVN objects are cluster-scoped and named by that id.
 type repository interface {
 	load(ctx context.Context, p domain.ProjectID) (domain.State, int64, error)
 	addressesInUse(ctx context.Context) (map[netip.Addr]bool, error)
@@ -102,6 +105,49 @@ func sortJobs(jobs []job) {
 			jobs[k], jobs[k-1] = jobs[k-1], jobs[k]
 		}
 	}
+}
+
+// resRef names one resource of a project.
+type resRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+const (
+	kindVPC    = "vpc"
+	kindSubnet = "subnet"
+	kindGroup  = "group"
+	kindEIP    = "eip"
+)
+
+// resourcesOf is every resource st holds.
+func resourcesOf(st domain.State) map[resRef]bool {
+	out := map[resRef]bool{}
+	for id := range st.VPCs {
+		out[resRef{kindVPC, string(id)}] = true
+	}
+	for id := range st.Subnets {
+		out[resRef{kindSubnet, string(id)}] = true
+	}
+	for id := range st.Groups {
+		out[resRef{kindGroup, string(id)}] = true
+	}
+	for id := range st.ElasticIPs {
+		out[resRef{kindEIP, string(id)}] = true
+	}
+	return out
+}
+
+// addedResources is every resource next holds that cur does not.
+func addedResources(cur, next domain.State) []resRef {
+	had := resourcesOf(cur)
+	var out []resRef
+	for ref := range resourcesOf(next) {
+		if !had[ref] {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func addressesOf(st domain.State) map[netip.Addr]bool {

@@ -29,6 +29,7 @@ func TestServiceAgainstStores(t *testing.T) {
 			t.Run("cross vpc peer", func(t *testing.T) { testCrossVPCPeerIsNotFound(t, opener.open(t)) })
 			t.Run("other region leaves the vpc", func(t *testing.T) { testOtherRegionLeavesVPC(t, opener.open(t)) })
 			t.Run("client id converges", func(t *testing.T) { testClientIDConverges(t, opener.open(t)) })
+			t.Run("id of another project", func(t *testing.T) { testIDOfAnotherProject(t, opener.open(t)) })
 		})
 	}
 }
@@ -942,6 +943,39 @@ func testOtherRegionLeavesVPC(t *testing.T, repo repository) {
 	}
 	if _, err := svc.GetVPC(ctx, "proj", "app"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// testIDOfAnotherProject: a client-chosen id another project holds is a
+// Conflict that writes nothing, because both would name one Kube-OVN object.
+func testIDOfAnotherProject(t *testing.T, repo repository) {
+	t.Helper()
+	svc, fake := openTest(t, repo)
+	ctx := context.Background()
+	app := domain.CreateVPC{CIDR: mustP("10.30.0.0/16"), ID: "app"}
+	if _, err := svc.CreateVPC(ctx, call("proj", "v"), app); err != nil {
+		t.Fatal(err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	before := len(fake.log())
+	_, err := svc.CreateVPC(ctx, call("other", "v"), domain.CreateVPC{CIDR: mustP("10.40.0.0/16"), ID: "app"})
+	if kind(err) != domain.Conflict {
+		t.Fatalf("vpc id of another project = %v", err)
+	}
+	if vpcs, err := svc.ListVPCs(ctx, "other"); err != nil || len(vpcs) != 0 {
+		t.Fatalf("refused create stored %v err %v", vpcs, err)
+	}
+	if err := drain(svc); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.log()) != before {
+		t.Fatalf("refused create reached the dataplane: %v", fake.log()[before:])
+	}
+	web := domain.CreateVPC{CIDR: mustP("10.40.0.0/16"), ID: "web"}
+	if _, err := svc.CreateVPC(ctx, call("other", "v"), web); err != nil {
+		t.Fatalf("key consumed by refused create: %v", err)
 	}
 }
 

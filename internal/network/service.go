@@ -1106,6 +1106,9 @@ func (s *Service) mutate(ctx context.Context, c domain.Call, typ domain.Operatio
 			cmt.state = &clone
 		}
 		if err := s.repo.commit(ctx, cmt); err != nil {
+			if errors.Is(err, errIDTaken) {
+				return s.commitFailure(ctx, c, fp, err)
+			}
 			if errors.Is(err, errStale) || errors.Is(err, errAddressTaken) || errors.Is(err, errKeyTaken) {
 				last = err
 				continue
@@ -1153,6 +1156,9 @@ func (s *Service) commitFailure(ctx context.Context, c domain.Call, fp [32]byte,
 	}
 	if errors.Is(err, errAddressTaken) {
 		return domain.Operation{}, &domain.Error{Kind: domain.Conflict, Msg: "pool address is taken"}
+	}
+	if errors.Is(err, errIDTaken) {
+		return domain.Operation{}, &domain.Error{Kind: domain.Conflict, Msg: "resource id already exists"}
 	}
 	if errors.Is(err, errStale) || errors.Is(err, errKeyTaken) {
 		return domain.Operation{}, &domain.Error{Kind: domain.Busy, Msg: "project changed concurrently"}
