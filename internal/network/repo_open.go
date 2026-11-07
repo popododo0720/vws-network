@@ -8,16 +8,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/popododo0720/vws-network/internal/domain"
 )
 
 // StoreConfig selects the Kubernetes store: ConfigMaps in Namespace, read
-// through Kubeconfig, or the in-cluster ServiceAccount when it is empty.
+// through Kubeconfig, or the in-cluster ServiceAccount when it is empty. The
+// Lease that picks the replica running the workers is in Namespace too.
 type StoreConfig struct {
 	Namespace  string
 	Kubeconfig string
+	// lease is the election timing; tests shorten it.
+	lease leaseTiming
 }
 
 // checkStore refuses a Config that does not set exactly one store, or names
@@ -38,26 +42,36 @@ func checkStore(cfg Config) error {
 	return nil
 }
 
-// openStore is the one place a checked Config becomes a repository.
-func openStore(ctx context.Context, cfg Config) (repository, error) {
+// openStore is the one place a checked Config becomes a repository and the
+// elector of its one writer. SQLite has no elector: its file has one process.
+func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 	if cfg.DatabasePath != "" {
-		return openSQLite(ctx, cfg.DatabasePath)
+		repo, err := openSQLite(ctx, cfg.DatabasePath)
+		return repo, nil, err
 	}
 	rc, err := restConfig("kubernetes store", cfg.Store.Kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("openStore: %w", err)
+		return nil, nil, fmt.Errorf("openStore: %w", err)
+	}
+	el, err := leaseElector(rest.CopyConfig(rc), cfg.Store.Namespace, cfg.Store.lease)
+	if err != nil {
+		return nil, nil, fmt.Errorf("openStore: %w", err)
 	}
 	// One commit is several ConfigMap calls; the client-go default of 5 QPS
 	// would hold every mutation for seconds.
 	rc.QPS, rc.Burst = storeQPS, storeBurst
 	c, err := client.New(rc, client.Options{})
 	if err != nil {
-		return nil, fmt.Errorf("openStore: %w", err)
+		return nil, nil, fmt.Errorf("openStore: %w", err)
 	}
 	if err := probeNamespace(ctx, c, cfg.Store.Namespace); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return newKubeRepo(ctx, c, cfg.Store.Namespace)
+	repo, err := newKubeRepo(ctx, c, cfg.Store.Namespace)
+	if err != nil {
+		return nil, nil, err
+	}
+	return repo, el, nil
 }
 
 const (

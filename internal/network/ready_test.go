@@ -57,10 +57,18 @@ func TestReady(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			s.stop = func() {}
+			s.leading.Store(true)
 			s.heartbeat.Store(time.Now().Add(-2 * staleHeartbeat).UnixNano())
 			return s
 		}, "workers:"},
+		{"follower with an old heartbeat", func(t *testing.T) *Service {
+			s, err := newService(ctx, newMemRepo(), newFake(), pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.heartbeat.Store(time.Now().Add(-2 * staleHeartbeat).UnixNano())
+			return s
+		}, ""},
 		{"dataplane read fails", func(t *testing.T) *Service {
 			s, err := newService(ctx, newMemRepo(), unreadyDataplane{newFake()}, pool)
 			if err != nil {
