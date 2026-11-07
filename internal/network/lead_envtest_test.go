@@ -4,8 +4,6 @@ package network
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,7 +17,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -32,21 +29,20 @@ var fastLease = leaseTiming{duration: 2 * time.Second, renew: 1500 * time.Millis
 
 const leaseHolderEnv = "VWS_TEST_LEASE_HOLDER_KUBECONFIG"
 
-// storeKubeconfig is a kubeconfig for a user that has only the store Role of
-// docs/rbac.md.
-func storeKubeconfig(t *testing.T, env *envtest.Environment, admin client.Client) string {
+// roleUser is a user bound to a Role with rules in envNamespace.
+func roleUser(
+	t *testing.T, env *envtest.Environment, admin client.Client, name string, rules []rbacv1.PolicyRule,
+) *envtest.AuthenticatedUser {
 	t.Helper()
-	ctx := context.Background()
-	name := "vws-network-lease"
 	subj := []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: name, APIGroup: rbacv1.GroupName}}
 	for _, o := range []client.Object{
-		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Rules: storeRules},
+		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Rules: rules},
 		&rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Subjects: subj,
 			RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
 		},
 	} {
-		if err := admin.Create(ctx, o); err != nil {
+		if err := admin.Create(context.Background(), o); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,16 +50,19 @@ func storeKubeconfig(t *testing.T, env *envtest.Environment, admin client.Client
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := u.KubeConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := clientcmd.Load(b)
+	return u
+}
+
+// storeKubeconfig is a kubeconfig for a user that has only the store Role of
+// docs/rbac.md.
+func storeKubeconfig(t *testing.T, env *envtest.Environment, admin client.Client) string {
+	t.Helper()
+	b, err := roleUser(t, env, admin, "vws-network-lease", storeRules).KubeConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := clientcmd.WriteToFile(*cfg, p); err != nil {
+	if err := os.WriteFile(p, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -100,16 +99,6 @@ func leaseHolder(t *testing.T, c client.Client) string {
 		return ""
 	}
 	return *l.Spec.HolderIdentity
-}
-
-func ensuredVPC(f *fakeDataplane, id string) int {
-	n := 0
-	for _, c := range f.log() {
-		if c == "ensure-vpc/"+id {
-			n++
-		}
-	}
-	return n
 }
 
 // TestEnvtestLeaseOneWorkerAndHandoff opens two replicas as the store Role.
@@ -187,18 +176,11 @@ func (stuckDataplane) ensureVPC(ctx context.Context, _ domain.VPC) error {
 	return ctx.Err()
 }
 
-// TestEnvtestLeaseHolderProcess is the Lease holder that
-// TestEnvtestLeaseHolderKilled runs in a child process and kills.
-func TestEnvtestLeaseHolderProcess(t *testing.T) {
-	kc := os.Getenv(leaseHolderEnv)
-	if kc == "" {
-		t.Skip("runs only as the child of TestEnvtestLeaseHolderKilled")
-	}
+// startHolder runs a replica whose VPCs never finish, its Lease client
+// built from lrc.
+func startHolder(t *testing.T, rc, lrc *rest.Config) *Service {
+	t.Helper()
 	ctx := context.Background()
-	rc, err := restConfig("lease holder", kc)
-	if err != nil {
-		t.Fatal(err)
-	}
 	c, err := client.New(rc, client.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -211,13 +193,28 @@ func TestEnvtestLeaseHolderProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	el, err := leaseElector(ctx, rc, envNamespace, fastLease)
+	el, err := leaseElector(ctx, lrc, envNamespace, fastLease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.launch(ctx, el); err != nil {
 		t.Fatal(err)
 	}
+	return svc
+}
+
+// TestEnvtestLeaseHolderProcess is the Lease holder that
+// TestEnvtestLeaseHolderKilled runs in a child process and kills.
+func TestEnvtestLeaseHolderProcess(t *testing.T) {
+	kc := os.Getenv(leaseHolderEnv)
+	if kc == "" {
+		t.Skip("runs only as the child of TestEnvtestLeaseHolderKilled")
+	}
+	rc, err := restConfig("lease holder", kc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startHolder(t, rc, rc)
 	select {}
 }
 
@@ -268,7 +265,7 @@ func TestEnvtestLeaseHolderKilled(t *testing.T) {
 	if !replica.leading.Load() || leaseHolder(t, admin) == holder {
 		t.Fatalf("replica finished without the Lease: holder %q", leaseHolder(t, admin))
 	}
-	if n := ensuredVPC(dp, op.Resource); n != 1 {
+	if n := strings.Count(strings.Join(dp.log(), " ")+" ", "ensure-vpc/"+op.Resource+" "); n != 1 {
 		t.Fatalf("vpc ensured %d times by the new holder, want 1: %v\nchild:\n%s", n, dp.log(), out.String())
 	}
 	vpcs, err := replica.ListVPCs(ctx, "proj")
@@ -281,26 +278,14 @@ type roundTripper func(*http.Request) (*http.Response, error)
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// TestEnvtestLeaseLostStopsWorkersFirst fails every renewal and stalls every
-// release of the holder. Its workers stop before the Lease runs out, so the
-// next holder never runs beside them.
+// TestEnvtestLeaseLostStopsWorkersFirst stalls every Lease update of the
+// holder, renewals and release alike. Its workers stop before the Lease runs
+// out, so the next holder never runs beside them.
 func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
 	env, admin := startEnv(t)
 	ctx := context.Background()
 	kc := storeKubeconfig(t, env, admin)
 	rc, err := restConfig("lease holder", kc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := client.New(rc, client.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := newKubeRepo(ctx, c, envNamespace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := build(repo, stuckDataplane{newFake()}, envPool, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,24 +296,11 @@ func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
 			if !cut.Load() || r.Method != http.MethodPut || !strings.Contains(r.URL.Path, "/leases/") {
 				return base.RoundTrip(r)
 			}
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				return nil, err
-			}
-			if strings.Contains(string(body), `"holderIdentity":""`) || !strings.Contains(string(body), `"holderIdentity"`) {
-				<-r.Context().Done()
-				return nil, r.Context().Err()
-			}
-			return nil, errors.New("renewal connection cut")
+			<-r.Context().Done()
+			return nil, r.Context().Err()
 		})
 	}
-	el, err := leaseElector(ctx, lrc, envNamespace, fastLease)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.launch(ctx, el); err != nil {
-		t.Fatal(err)
-	}
+	first := startHolder(t, rc, lrc)
 	defer closeOrFail(t, first.Close)
 	waitFor(t, first.leading.Load)
 	second, _ := openReplica(t, kc)
@@ -354,23 +326,7 @@ func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
 func TestEnvtestStoreRefusesWithoutLeaseRole(t *testing.T) {
 	env, admin := startEnv(t)
 	ctx := context.Background()
-	name := "vws-network-no-lease"
-	subj := []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: name, APIGroup: rbacv1.GroupName}}
-	for _, o := range []client.Object{
-		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Rules: storeRules[:1]},
-		&rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Subjects: subj,
-			RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
-		},
-	} {
-		if err := admin.Create(ctx, o); err != nil {
-			t.Fatal(err)
-		}
-	}
-	u, err := env.AddUser(envtest.User{Name: name}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	u := roleUser(t, env, admin, "vws-network-no-lease", storeRules[:1])
 	if _, err := leaseElector(ctx, u.Config(), envNamespace, fastLease); err == nil ||
 		!strings.Contains(err.Error(), "lease vws-network") || !strings.Contains(err.Error(), "forbidden") {
 		t.Fatalf("start without the Lease rule: err %v", err)

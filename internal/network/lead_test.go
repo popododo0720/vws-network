@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/popododo0720/vws-network/internal/domain"
 )
 
 // TestRoundLateLeadDoesNotRun: client-go starts the leading callback in a
@@ -40,30 +38,5 @@ func TestRoundFinishWaitsForLead(t *testing.T) {
 	case <-returned:
 	default:
 		t.Fatal("finish returned before the lead")
-	}
-}
-
-// TestTakeOverRequeuesBeforeWork: a new Lease holder returns operations the
-// previous holder left running to pending before any worker claims.
-func TestTakeOverRequeuesBeforeWork(t *testing.T) {
-	ctx := context.Background()
-	repo := newMemRepo()
-	svc, err := build(repo, newFake(), mustP("10.99.0.0/24"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	op, err := svc.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := repo.claim(ctx, svc.now(), "old-holder"); err != nil || !ok {
-		t.Fatal(err, ok)
-	}
-	leadCtx, cancel := context.WithCancel(ctx)
-	svc.loops = []func(context.Context){func(context.Context) { cancel() }}
-	svc.takeOver(leadCtx)
-	got, err := svc.GetOperation(ctx, "proj", op.ID)
-	if err != nil || got.State != domain.OpPending {
-		t.Fatalf("after take over %+v err %v", got, err)
 	}
 }

@@ -24,9 +24,9 @@ import (
 // Config selects the durable store, the elastic IP pool, and the dataplane.
 // The store is one SQLite file at DatabasePath or ConfigMaps in
 // Store.Namespace; exactly one is set. Many replicas may share the Kubernetes
-// store; only the holder of its Lease runs the workers. AddressPool is a canonical IPv4 prefix
-// from /16 through /30. Workers 0 starts two workers. A zero KubeOVN keeps
-// the in-process fake dataplane.
+// store; only the holder of its Lease runs the workers. AddressPool is a
+// canonical IPv4 prefix from /16 through /30. Workers 0 starts two workers. A
+// zero KubeOVN keeps the in-process fake dataplane.
 type Config struct {
 	DatabasePath string
 	Store        StoreConfig
@@ -65,8 +65,9 @@ type Service struct {
 // Open opens the store and starts the workers and reconcile loops. On SQLite
 // they start at once, after operations left running by the previous process
 // go back to pending. On the Kubernetes store they run only while this
-// replica holds the Lease, and each new holder requeues first. The dataplane is Kube-OVN when cfg.KubeOVN sets a
-// kubeconfig or any other Kube-OVN option, and the in-process fake otherwise.
+// replica holds the Lease, and each new holder requeues first. The dataplane
+// is Kube-OVN when cfg.KubeOVN sets a kubeconfig or any other Kube-OVN
+// option, and the in-process fake otherwise.
 func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err

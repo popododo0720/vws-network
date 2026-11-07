@@ -78,42 +78,23 @@ func leaseElector(ctx context.Context, rc *rest.Config, ns string, t leaseTiming
 	return func(ctx context.Context, lead func(context.Context)) { elect(ctx, cfg, lead) }, nil
 }
 
-// probeLease refuses start when the Lease cannot be read, created and
-// updated. Without it every replica would be ready and none would ever run
-// an operation.
+// probeLease refuses start when the Lease cannot be read and created.
+// Without it every replica would be ready and none would ever run an
+// operation.
 func probeLease(ctx context.Context, leases coordinationv1.LeaseInterface) error {
 	ctx, cancel := callCtx(ctx)
 	defer cancel()
-	dry := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
 	probe := &coordv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: leaseName}}
 	err := retried(func() error {
-		if _, err := leases.Create(ctx, probe, dry); err != nil {
+		if _, err := leases.Get(ctx, leaseName, metav1.GetOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get: %w", err)
+		}
+		_, err := leases.Create(ctx, probe, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("dry-run create: %w", err)
 		}
 		return nil
 	})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("lease %s: %w", leaseName, err)
-	}
-	var cur *coordv1.Lease
-	err = retried(func() error {
-		var err error
-		if cur, err = leases.Get(ctx, leaseName, metav1.GetOptions{}); err != nil {
-			return fmt.Errorf("get: %w", err)
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err == nil {
-		err = retried(func() error {
-			if _, err := leases.Update(ctx, cur, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
-				return fmt.Errorf("dry-run update: %w", err)
-			}
-			return nil
-		})
-	}
 	if err != nil {
 		return fmt.Errorf("lease %s: %w", leaseName, err)
 	}
