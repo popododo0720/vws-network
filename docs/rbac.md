@@ -44,7 +44,7 @@ Needed only when desired state lives in the Kubernetes store instead of `-db`. A
 | "" (core) | configmaps | get, list, create, update, delete | `kubeRepo`: project heads, one object per resource and operation, idempotency key, pool address and resource id claims (`get`, `list`, `create`, `update`, `deleteAt`), `ping` (list) |
 | coordination.k8s.io | leases | get, create, update | `leaseElector`: Lease `vws-network`, whose holder is the one replica that runs the workers and the reconcile loops |
 
-watch is not used.
+watch is not used. `import-sqlite` (`docs/import.md`) uses only the configmaps row; `TestEnvtestImportSQLiteFixture` runs it as a user that has only that row.
 
 ## Gateway node label (`-kube-gateway-nodes`)
 

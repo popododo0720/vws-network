@@ -28,6 +28,9 @@ import (
 const flagVMMTU = "vm-mtu"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == importCommand {
+		os.Exit(importMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	listen := flag.String("listen", "127.0.0.1:8080", "grpc listen address")
 	dbPath := flag.String("db", "", "sqlite database path; set this or -store-namespace")
 	storeNamespace := flag.String("store-namespace", "",

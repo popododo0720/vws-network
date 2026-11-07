@@ -98,6 +98,28 @@ CREATE TABLE addresses (
 	return r, nil
 }
 
+// sqliteCurrent opens path read-only and refuses a schema other than
+// schemaVersion, so a run that must write nothing never migrates the file.
+func sqliteCurrent(ctx context.Context, path string) error {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return fmt.Errorf("sqliteCurrent: %w", err)
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return failClose(fmt.Errorf("sqliteCurrent: %w", err), db)
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("sqliteCurrent: %w", err)
+	}
+	if version != schemaVersion {
+		return &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf(
+			"sqlite schema version %d is not %d: run the import without -dry-run or -verify, which migrates it",
+			version, schemaVersion)}
+	}
+	return nil
+}
+
 // migrateSQLite rewrites stored documents and sets user_version in one transaction.
 func migrateSQLite(ctx context.Context, db *sql.DB, version int) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -614,6 +636,31 @@ func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 		return nil, fmt.Errorf("nonTerminal: %w", err)
 	}
 	return jobs, nil
+}
+
+// jobs is every operation in sequence order, for the import.
+func (r *sqliteRepo) jobs(ctx context.Context) ([]job, error) {
+	if err := r.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer r.unlock()
+	rows, err := r.db.QueryContext(ctx, opSelect+` ORDER BY seq`)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: %w", err)
+	}
+	defer closeLogged(ctx, rows)
+	var out []job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("jobs: %w", err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobs: %w", err)
+	}
+	return out, nil
 }
 
 func (r *sqliteRepo) requeue(ctx context.Context) error {

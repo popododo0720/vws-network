@@ -10,6 +10,8 @@ go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 
 `-listen` defaults to `127.0.0.1:8080`.
 
+`vws-network import-sqlite -from FILE -store-namespace NS` copies a `-db` file into the Kubernetes store once (`docs/import.md`).
+
 When Kube-OVN is selected with `-kubeconfig` (or the in-cluster ServiceAccount) and the API server cannot be reached at start, the service does not come up and exits with code 1. The error is `kube-ovn start checks need the API server, so vws-network does not start: ...`. The reason is that everything that must happen before serving uses the API server:
 
 - Without underlay flags, it checks that `-pool` is inside the `cidrBlock` of the external Subnet the operator created. Coming up without that check could hand out elastic IPs Kube-OVN cannot route (#52).
