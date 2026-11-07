@@ -39,7 +39,9 @@ type elector func(ctx context.Context, lead func(context.Context))
 
 // leaseElector competes for leaseName in ns. A replica that loses the Lease
 // stops lead and competes again; Close stops lead before giving the Lease up,
-// so the next holder never overlaps it.
+// so the next holder never overlaps it. client-go's ReleaseOnCancel is off:
+// after a failed renewal it would first try a release, for up to the renew
+// deadline, while lead still runs and the Lease runs out.
 func leaseElector(rc *rest.Config, ns string, t leaseTiming) (elector, error) {
 	cs, err := coordinationv1.NewForConfig(rc)
 	if err != nil {
@@ -56,11 +58,10 @@ func leaseElector(rc *rest.Config, ns string, t leaseTiming) (elector, error) {
 			Client:     cs,
 			LockConfig: resourcelock.ResourceLockConfig{Identity: randomID(host + "_")},
 		},
-		LeaseDuration:   t.duration,
-		RenewDeadline:   t.renew,
-		RetryPeriod:     t.retry,
-		ReleaseOnCancel: true,
-		Name:            leaseName,
+		LeaseDuration: t.duration,
+		RenewDeadline: t.renew,
+		RetryPeriod:   t.retry,
+		Name:          leaseName,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(context.Context) {},
 			OnStoppedLeading: func() {},
@@ -99,8 +100,30 @@ func elect(ctx context.Context, cfg leaderelection.LeaderElectionConfig, lead fu
 			r.finish()
 			release()
 			<-done
+			giveUp(ctx, cfg)
 			return
 		}
+	}
+}
+
+// giveUp clears the Lease when this replica still holds it, so the next
+// replica takes it at once instead of after the lease duration. Run has
+// returned, so nothing renews it any more.
+func giveUp(ctx context.Context, cfg leaderelection.LeaderElectionConfig) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.RenewDeadline)
+	defer cancel()
+	rec, _, err := cfg.Lock.Get(ctx)
+	if err == nil && rec.HolderIdentity == cfg.Lock.Identity() {
+		now := metav1.NewTime(time.Now())
+		err = cfg.Lock.Update(ctx, resourcelock.LeaderElectionRecord{
+			LeaseDurationSeconds: 1,
+			AcquireTime:          now,
+			RenewTime:            now,
+			LeaderTransitions:    rec.LeaderTransitions,
+		})
+	}
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "network: give up the lease", slog.String(obs.FieldErr, err.Error()))
 	}
 }
 

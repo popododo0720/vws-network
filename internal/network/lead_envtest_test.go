@@ -4,6 +4,9 @@ package network
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -271,4 +275,76 @@ func TestEnvtestLeaseHolderKilled(t *testing.T) {
 	if err != nil || len(vpcs) != 1 || vpcs[0].Status != domain.StatusAvailable {
 		t.Fatalf("vpcs %+v err %v", vpcs, err)
 	}
+}
+
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestEnvtestLeaseLostStopsWorkersFirst fails every renewal and stalls every
+// release of the holder. Its workers stop before the Lease runs out, so the
+// next holder never runs beside them.
+func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
+	env, admin := startEnv(t)
+	ctx := context.Background()
+	kc := storeKubeconfig(t, env, admin)
+	rc, err := restConfig("lease holder", kc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.New(rc, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := newKubeRepo(ctx, c, envNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := build(repo, stuckDataplane{newFake()}, envPool, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cut atomic.Bool
+	lrc := rest.CopyConfig(rc)
+	lrc.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		return roundTripper(func(r *http.Request) (*http.Response, error) {
+			if !cut.Load() || r.Method != http.MethodPut || !strings.Contains(r.URL.Path, "/leases/") {
+				return base.RoundTrip(r)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			if strings.Contains(string(body), `"holderIdentity":""`) || !strings.Contains(string(body), `"holderIdentity"`) {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}
+			return nil, errors.New("renewal connection cut")
+		})
+	}
+	el, err := leaseElector(lrc, envNamespace, fastLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.launch(ctx, el); err != nil {
+		t.Fatal(err)
+	}
+	defer closeOrFail(t, first.Close)
+	waitFor(t, first.leading.Load)
+	second, _ := openReplica(t, kc)
+	defer closeOrFail(t, second.Close)
+	op, err := second.CreateVPC(ctx, call("proj", "vpc"), domain.CreateVPC{CIDR: mustP("10.8.0.0/16")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		got, err := second.GetOperation(ctx, "proj", op.ID)
+		return err == nil && got.State == domain.OpRunning
+	})
+	cut.Store(true)
+	waitFor(t, second.leading.Load)
+	if first.leading.Load() {
+		t.Fatal("the old holder still runs workers after the next one took the Lease")
+	}
+	waitSucceeded(t, second, "proj", op)
 }
