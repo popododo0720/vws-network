@@ -83,52 +83,80 @@ func TestKubeRepoLargestProjectFitsLimit(t *testing.T) {
 	eipOp := run(svc.AllocateElasticIP(ctx, key(), domain.AllocateElasticIP{VPC: vpcID, Labels: text.Labels}))
 
 	// Rules are the one count without a bound of its own; the store bounds
-	// it. Grow the default group, which a VPC delete changes together with
-	// the VPC, until the store refuses.
-	group := vpc.DefaultGroup
+	// it. fill grows a group in batches of 100, 10 and 1 rules until the
+	// store refuses a single rule.
 	port := int32(0)
-	refused := false
-	for range 200 {
-		var rules []domain.Rule
-		for range 100 {
-			port++
-			rules = append(rules, domain.Rule{
-				Direction: domain.Ingress, Protocol: domain.TCP, FromPort: port, ToPort: port,
-				Peer: domain.Peer{CIDR: mustP("192.168.0.0/16")},
-			})
+	fill := func(group domain.SecurityGroupID) domain.SecurityGroup {
+		t.Helper()
+		for _, batch := range []int{100, 10, 1} {
+			for {
+				var rules []domain.Rule
+				for range batch {
+					port++
+					rules = append(rules, domain.Rule{
+						Direction: domain.Ingress, Protocol: domain.TCP, FromPort: port, ToPort: port,
+						Peer: domain.Peer{CIDR: mustP("192.168.0.0/16")},
+					})
+				}
+				op, err := svc.AuthorizeRules(ctx, key(), domain.AuthorizeRules{Group: group, Rules: rules})
+				if kind(err) == domain.Invalid {
+					break
+				}
+				run(op, err)
+			}
 		}
-		op, err := svc.AuthorizeRules(ctx, key(), domain.AuthorizeRules{Group: group, Rules: rules})
-		if kind(err) == domain.Invalid {
-			refused = true
-			break
+		g, err := svc.GetSecurityGroup(ctx, "proj", group)
+		if err != nil {
+			t.Fatal(err)
 		}
-		run(op, err)
-	}
-	if !refused {
-		t.Fatal("the store never refused a growing group")
-	}
-	g, err := svc.GetSecurityGroup(ctx, "proj", group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored := len(g.Rules)
-	if stored != int(port)-100+1 {
-		t.Fatalf("refused authorize left %d rules, want %d", stored, int(port)-100+1)
-	}
-	// AWS allows at most 1000 rules per group (60 inbound by default).
-	if stored < 1000 {
-		t.Fatalf("store holds only %d rules in one group", stored)
+		return g
 	}
 
-	run(svc.RevokeRules(ctx, key(), domain.RevokeRules{Group: group, Rules: g.Rules[:10]}))
+	// The default group is changed together with the VPC by a VPC delete.
+	def := fill(vpc.DefaultGroup)
+	// AWS allows at most 1000 rules per group (60 inbound by default).
+	if len(def.Rules) < 1000 {
+		t.Fatalf("store holds only %d rules in one group", len(def.Rules))
+	}
+
+	// Pad the description of a full group until the store refuses, so the
+	// group sits within a byte of the limit before its revoke.
+	sgID := domain.SecurityGroupID(sgOp.Resource)
+	sg := fill(sgID)
+	lo, hi := 0, 1025
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		op, err := svc.UpdateSecurityGroup(ctx, key(), domain.CreateSecurityGroup{
+			ID: sgID, VPC: vpcID, Name: sg.Name, KeepRules: true,
+			Text: domain.Text{Description: strings.Repeat("d", mid), SetDescription: true},
+		})
+		if kind(err) == domain.Invalid {
+			hi = mid
+			continue
+		}
+		run(op, err)
+		lo = mid
+	}
+	if hi > 1024 {
+		t.Fatal("the group did not reach the limit")
+	}
+	if got, err := svc.GetSecurityGroup(ctx, "proj", sgID); err != nil || len(got.Rules) != len(sg.Rules) {
+		t.Fatalf("refused requests changed the rules: %d, %v", len(got.Rules), err)
+	}
+
+	run(svc.RevokeRules(ctx, key(), domain.RevokeRules{Group: sgID, Rules: sg.Rules[:1]}))
+	run(svc.RevokeRules(ctx, key(), domain.RevokeRules{Group: def.ID, Rules: def.Rules[:10]}))
+	if got, err := svc.GetSecurityGroup(ctx, "proj", sgID); err != nil || len(got.Rules) != len(sg.Rules)-1 {
+		t.Fatalf("revoke at the limit left %d rules, %v", len(got.Rules), err)
+	}
 	run(svc.DeleteSubnet(ctx, key(), domain.DeleteSubnet{Subnet: domain.SubnetID(subOp.Resource)}))
-	run(svc.DeleteSecurityGroup(ctx, key(), domain.DeleteSecurityGroup{Group: domain.SecurityGroupID(sgOp.Resource)}))
+	run(svc.DeleteSecurityGroup(ctx, key(), domain.DeleteSecurityGroup{Group: sgID}))
 	run(svc.ReleaseElasticIP(ctx, key(), domain.ReleaseElasticIP{ElasticIP: domain.ElasticIPID(eipOp.Resource)}))
 	run(svc.DeleteVPC(ctx, key(), domain.DeleteVPC{VPC: vpcID}))
 	if _, err := svc.GetVPC(ctx, "proj", vpcID); kind(err) != domain.NotFound {
 		t.Fatalf("vpc with the largest default group was not deleted: %v", err)
 	}
-	t.Logf("%d rules in one group; largest objects %v", stored, most)
+	t.Logf("%d and %d rules in two groups; largest objects %v", len(def.Rules), len(sg.Rules), most)
 }
 
 func TestKubeRepoRefusesHeadTooLargeBeforeSwap(t *testing.T) {

@@ -825,7 +825,7 @@ func (r *kubeRepo) commitOnce(ctx context.Context, c commit) error {
 	}
 	var taken []*corev1.ConfigMap
 	if c.state != nil {
-		if taken, err = r.stateChange(ctx, c.project, cur, *c.state, c.settle == nil, &cs); err != nil {
+		if taken, err = r.stateChange(ctx, c.project, cur, *c.state, admits(c), &cs); err != nil {
 			return err
 		}
 	}
@@ -904,10 +904,32 @@ func (r *kubeRepo) opChange(ctx context.Context, c commit, cs *changeSet) (bool,
 	return false, nil
 }
 
+// removesContent are the requests that take content out of a document. They
+// may grow it only by a mark the worker clears, so they keep the exact check:
+// a group at the limit can still revoke a rule and be deleted.
+var removesContent = map[domain.OperationType]bool{
+	domain.OpDeleteVPC: true, domain.OpDeleteSubnet: true, domain.OpDeleteSecurityGroup: true,
+	domain.OpRevokeRules: true, domain.OpReleaseElasticIP: true, domain.OpDisassociateElasticIP: true,
+}
+
+// admits reports a commit whose documents must leave room for their next
+// change: a request that may add content.
+func admits(c commit) bool {
+	if c.settle != nil {
+		return false
+	}
+	for _, j := range []*job{c.enqueue, c.revive} {
+		if j != nil && removesContent[j.op.Type] {
+			return false
+		}
+	}
+	return true
+}
+
 // stateChange adds the resource writes from cur to next to cs and takes every
 // pool address and resource id next holds that cur does not. It returns the claims it took.
 //
-// A request change (admit) must leave room for the next change of the same
+// A change that admits content must leave room for the next change of the same
 // document: the resource object holds a document and the one before it, so a
 // document that fits only once could never be settled, revoked or deleted.
 func (r *kubeRepo) stateChange(
