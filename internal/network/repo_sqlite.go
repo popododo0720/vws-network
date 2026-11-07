@@ -616,6 +616,31 @@ func (r *sqliteRepo) nonTerminal(ctx context.Context) ([]job, error) {
 	return jobs, nil
 }
 
+// jobs is every operation in sequence order, for the import.
+func (r *sqliteRepo) jobs(ctx context.Context) ([]job, error) {
+	if err := r.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer r.unlock()
+	rows, err := r.db.QueryContext(ctx, opSelect+` ORDER BY seq`)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: %w", err)
+	}
+	defer closeLogged(ctx, rows)
+	var out []job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("jobs: %w", err)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobs: %w", err)
+	}
+	return out, nil
+}
+
 func (r *sqliteRepo) requeue(ctx context.Context) error {
 	if err := r.lock(ctx); err != nil {
 		return err
