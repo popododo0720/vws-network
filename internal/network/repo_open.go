@@ -53,10 +53,6 @@ func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("openStore: %w", err)
 	}
-	el, err := leaseElector(rest.CopyConfig(rc), cfg.Store.Namespace, cfg.Store.lease)
-	if err != nil {
-		return nil, nil, fmt.Errorf("openStore: %w", err)
-	}
 	// One commit is several ConfigMap calls; the client-go default of 5 QPS
 	// would hold every mutation for seconds.
 	rc.QPS, rc.Burst = storeQPS, storeBurst
@@ -66,6 +62,10 @@ func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 	}
 	if err := probeNamespace(ctx, c, cfg.Store.Namespace); err != nil {
 		return nil, nil, err
+	}
+	el, err := leaseElector(ctx, rest.CopyConfig(rc), cfg.Store.Namespace, cfg.Store.lease)
+	if err != nil {
+		return nil, nil, fmt.Errorf("openStore: %w", err)
 	}
 	repo, err := newKubeRepo(ctx, c, cfg.Store.Namespace)
 	if err != nil {

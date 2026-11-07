@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/popododo0720/vws-lib/obs"
+	coordv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	coordinationv1 "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	"k8s.io/client-go/rest"
@@ -42,10 +44,13 @@ type elector func(ctx context.Context, lead func(context.Context))
 // so the next holder never overlaps it. client-go's ReleaseOnCancel is off:
 // after a failed renewal it would first try a release, for up to the renew
 // deadline, while lead still runs and the Lease runs out.
-func leaseElector(rc *rest.Config, ns string, t leaseTiming) (elector, error) {
+func leaseElector(ctx context.Context, rc *rest.Config, ns string, t leaseTiming) (elector, error) {
 	cs, err := coordinationv1.NewForConfig(rc)
 	if err != nil {
 		return nil, fmt.Errorf("lease client: %w", err)
+	}
+	if err := probeLease(ctx, cs.Leases(ns)); err != nil {
+		return nil, err
 	}
 	host, err := os.Hostname()
 	if err != nil {
@@ -71,6 +76,48 @@ func leaseElector(rc *rest.Config, ns string, t leaseTiming) (elector, error) {
 		return nil, fmt.Errorf("lease election: %w", err)
 	}
 	return func(ctx context.Context, lead func(context.Context)) { elect(ctx, cfg, lead) }, nil
+}
+
+// probeLease refuses start when the Lease cannot be read, created and
+// updated. Without it every replica would be ready and none would ever run
+// an operation.
+func probeLease(ctx context.Context, leases coordinationv1.LeaseInterface) error {
+	ctx, cancel := callCtx(ctx)
+	defer cancel()
+	dry := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
+	probe := &coordv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: leaseName}}
+	err := retried(func() error {
+		if _, err := leases.Create(ctx, probe, dry); err != nil {
+			return fmt.Errorf("dry-run create: %w", err)
+		}
+		return nil
+	})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("lease %s: %w", leaseName, err)
+	}
+	var cur *coordv1.Lease
+	err = retried(func() error {
+		var err error
+		if cur, err = leases.Get(ctx, leaseName, metav1.GetOptions{}); err != nil {
+			return fmt.Errorf("get: %w", err)
+		}
+		return nil
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err == nil {
+		err = retried(func() error {
+			if _, err := leases.Update(ctx, cur, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+				return fmt.Errorf("dry-run update: %w", err)
+			}
+			return nil
+		})
+	}
+	if err != nil {
+		return fmt.Errorf("lease %s: %w", leaseName, err)
+	}
+	return nil
 }
 
 func elect(ctx context.Context, cfg leaderelection.LeaderElectionConfig, lead func(context.Context)) {

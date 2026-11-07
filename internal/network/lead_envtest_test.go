@@ -211,7 +211,7 @@ func TestEnvtestLeaseHolderProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	el, err := leaseElector(rc, envNamespace, fastLease)
+	el, err := leaseElector(ctx, rc, envNamespace, fastLease)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
 			return nil, errors.New("renewal connection cut")
 		})
 	}
-	el, err := leaseElector(lrc, envNamespace, fastLease)
+	el, err := leaseElector(ctx, lrc, envNamespace, fastLease)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,4 +347,32 @@ func TestEnvtestLeaseLostStopsWorkersFirst(t *testing.T) {
 		t.Fatal("the old holder still runs workers after the next one took the Lease")
 	}
 	waitSucceeded(t, second, "proj", op)
+}
+
+// TestEnvtestStoreRefusesWithoutLeaseRole: with only the configmaps rule the
+// service would be ready and never run an operation, so start is refused.
+func TestEnvtestStoreRefusesWithoutLeaseRole(t *testing.T) {
+	env, admin := startEnv(t)
+	ctx := context.Background()
+	name := "vws-network-no-lease"
+	subj := []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: name, APIGroup: rbacv1.GroupName}}
+	for _, o := range []client.Object{
+		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Rules: storeRules[:1]},
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: envNamespace}, Subjects: subj,
+			RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
+		},
+	} {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := env.AddUser(envtest.User{Name: name}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leaseElector(ctx, u.Config(), envNamespace, fastLease); err == nil ||
+		!strings.Contains(err.Error(), "lease vws-network") || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("start without the Lease rule: err %v", err)
+	}
 }
