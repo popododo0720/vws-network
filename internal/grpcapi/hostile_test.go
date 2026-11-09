@@ -99,6 +99,28 @@ func TestAnnotationsAreRefusedNotDropped(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("update of annotations gave %v, want InvalidArgument", err)
 	}
+	_, err = vpcs.UpdateVpc(ctx, &networkv1.UpdateVpcRequest{
+		Vpc: &networkv1.Vpc{
+			Name: parent + "/vpcs/app", Annotations: tags,
+			Spec: &networkv1.VpcSpec{Ipv4Cidr: "10.0.0.0/16"},
+		},
+		AllowMissing: true,
+		RequestId:    "99999999-9999-4999-8999-999999999999",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("upsert vpc with annotations gave %v, want InvalidArgument", err)
+	}
+	_, err = subs.UpdateSubnet(ctx, &networkv1.UpdateSubnetRequest{
+		Subnet: &networkv1.Subnet{
+			Name: parent + "/vpcs/app/subnets/web", Annotations: tags,
+			Spec: &networkv1.SubnetSpec{Zone: "az1", Ipv4Cidr: "10.0.1.0/24"},
+		},
+		AllowMissing: true,
+		RequestId:    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("upsert subnet with annotations gave %v, want InvalidArgument", err)
+	}
 
 	list, err := vpcs.ListVpcs(ctx, &networkv1.ListVpcsRequest{Parent: parent})
 	if err != nil || len(list.GetVpcs()) != 0 {

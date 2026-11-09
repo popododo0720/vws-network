@@ -89,6 +89,11 @@ func (h *handler) UpdateVpc(ctx context.Context, req *networkv1.UpdateVpcRequest
 	if err := rejectEtag(req.GetVpc().GetEtag()); err != nil {
 		return nil, err
 	}
+	if req.GetAllowMissing() {
+		if err := rejectAnnotations(req.GetVpc().GetAnnotations()); err != nil {
+			return nil, err
+		}
+	}
 	touch := maskSelects(req.GetUpdateMask(), "spec.ipv4_cidr")
 	var cidr netip.Prefix
 	if touch {
@@ -239,6 +244,11 @@ func (h *handler) UpdateSubnet(ctx context.Context, req *networkv1.UpdateSubnetR
 	}
 	if err := rejectEtag(req.GetSubnet().GetEtag()); err != nil {
 		return nil, err
+	}
+	if req.GetAllowMissing() {
+		if err := rejectAnnotations(req.GetSubnet().GetAnnotations()); err != nil {
+			return nil, err
+		}
 	}
 	touch := maskSelects(req.GetUpdateMask(), "spec.zone") || maskSelects(req.GetUpdateMask(), "spec.ipv4_cidr")
 	var cidr netip.Prefix
