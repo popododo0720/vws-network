@@ -52,6 +52,8 @@ func main() {
 	vmNamespace := flag.String("kube-vm-namespace", "", "namespace of the instance VirtualMachineInstances (vws-compute's VM namespace); an address attached to an instance reads its interface IP there for the OvnFip")
 	vmMTU := flag.Int(flagVMMTU, network.DefaultVMMTU, "MTU of VM interfaces in VPC subnets (Kube-OVN Subnet spec.mtu and DHCP option 26), 68-9001; the chart sets it from VWSCluster spec.network.vmMTU")
 	gatewayNodes := flag.String("kube-gateway-nodes", "", "comma-separated nodes kept at ovn.kubernetes.io/external-gw=true while any VPC exists; no other node is touched")
+	workers := flag.Int("workers", network.DefaultWorkers, fmt.Sprintf(
+		"operation worker pool size, 1-%d; on the Kubernetes store only the Lease holder runs them", network.MaxWorkers))
 	gatewayRecheck := flag.Duration("kube-gateway-recheck", 5*time.Second, "how often -kube-gateway-nodes labels are checked and restored; 0 means the default, otherwise at least 1s")
 	flag.Parse()
 	pool, err := parseStart(*dbPath, *storeNamespace, *poolFlag)
@@ -70,10 +72,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "vws-network:", err)
 		os.Exit(2)
 	}
+	if err := checkWorkersFlag(*workers); err != nil {
+		fmt.Fprintln(os.Stderr, "vws-network:", err)
+		os.Exit(2)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	store := network.StoreConfig{Namespace: *storeNamespace, Kubeconfig: *kubeconfig}
-	if err := run(ctx, *listen, *dbPath, store, pool, network.KubeOVNConfig{
+	if err := run(ctx, *listen, *dbPath, store, pool, *workers, network.KubeOVNConfig{
 		Kubeconfig:         *kubeconfig,
 		ExternalSubnet:     *externalSubnet,
 		NADNamespace:       *nadNamespace,
@@ -93,7 +99,8 @@ func main() {
 }
 
 func run(
-	ctx context.Context, listen, dbPath string, store network.StoreConfig, pool netip.Prefix, kube network.KubeOVNConfig,
+	ctx context.Context, listen, dbPath string, store network.StoreConfig, pool netip.Prefix, workers int,
+	kube network.KubeOVNConfig,
 ) (err error) {
 	shutdown, err := obs.Setup(ctx, obs.ForService(grpcapi.ServiceName))
 	if err != nil {
@@ -104,7 +111,9 @@ func run(
 			err = errors.Join(err, fmt.Errorf("obs shutdown: %w", serr))
 		}
 	}()
-	svc, err := network.Open(ctx, network.Config{DatabasePath: dbPath, Store: store, AddressPool: pool, KubeOVN: kube})
+	svc, err := network.Open(ctx, network.Config{
+		DatabasePath: dbPath, Store: store, AddressPool: pool, Workers: workers, KubeOVN: kube,
+	})
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}

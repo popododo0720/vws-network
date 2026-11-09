@@ -61,7 +61,8 @@ func TestMetricsEndpointOptIn(t *testing.T) {
 	t.Run("prometheus needs a health address", func(t *testing.T) {
 		setObsEnv(t, "prometheus", "")
 		db := filepath.Join(t.TempDir(), "net.db")
-		err := run(t.Context(), freeAddr(t), db, network.StoreConfig{}, testPool, network.KubeOVNConfig{})
+		err := run(t.Context(), freeAddr(t), db, network.StoreConfig{}, testPool, network.DefaultWorkers,
+			network.KubeOVNConfig{})
 		if err == nil || !strings.Contains(err.Error(), "obs setup") {
 			t.Fatalf("run = %v, want an obs setup error", err)
 		}
@@ -91,7 +92,9 @@ func startRun(t *testing.T, listen string) func() {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	db := filepath.Join(t.TempDir(), "net.db")
-	go func() { done <- run(ctx, listen, db, network.StoreConfig{}, testPool, network.KubeOVNConfig{}) }()
+	go func() {
+		done <- run(ctx, listen, db, network.StoreConfig{}, testPool, network.DefaultWorkers, network.KubeOVNConfig{})
+	}()
 	stopped := false
 	stop := func() {
 		if stopped {
