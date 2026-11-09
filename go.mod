@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	cloud.google.com/go/longrunning v1.3.0
 	github.com/popododo0720/vws-lib v0.3.0
-	github.com/popododo0720/vws-proto v0.5.0
+	github.com/popododo0720/vws-proto v0.14.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	golang.org/x/mod v0.41.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
