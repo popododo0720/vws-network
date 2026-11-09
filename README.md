@@ -10,6 +10,8 @@ go run ./cmd/vws-network -db /tmp/vws-network.db -pool 10.250.0.0/24
 
 `-listen` defaults to `127.0.0.1:8080`.
 
+`-workers` sets the operation worker pool size. The default is 2 and the range is 1 to 64; any other value, 0 included, stops the start with exit code 2. On the Kubernetes store only the replica holding the Lease runs the workers. The vws-deploy chart passes it like any other flag, as `spec.services.<svc>.flags.workers` (popododo0720/vws-console-api#632).
+
 `vws-network import-sqlite -from FILE -store-namespace NS` copies a `-db` file into the Kubernetes store once (`docs/import.md`).
 
 When Kube-OVN is selected with `-kubeconfig` (or the in-cluster ServiceAccount) and the API server cannot be reached at start, the service does not come up and exits with code 1. The error is `kube-ovn start checks need the API server, so vws-network does not start: ...`. The reason is that everything that must happen before serving uses the API server:
