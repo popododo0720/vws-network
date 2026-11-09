@@ -55,6 +55,9 @@ func (h *handler) CreateVpc(ctx context.Context, req *networkv1.CreateVpcRequest
 	if err := parseRequestID(req.GetRequestId()); err != nil {
 		return nil, err
 	}
+	if err := rejectAnnotations(req.GetVpc().GetAnnotations()); err != nil {
+		return nil, err
+	}
 	cidr, err := vpcSpec(req.GetVpc())
 	if err != nil {
 		return nil, err
@@ -201,6 +204,9 @@ func (h *handler) CreateSubnet(ctx context.Context, req *networkv1.CreateSubnetR
 		return nil, err
 	}
 	if err := parseRequestID(req.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if err := rejectAnnotations(req.GetSubnet().GetAnnotations()); err != nil {
 		return nil, err
 	}
 	cidr, zone, err := subnetSpec(req.GetSubnet())

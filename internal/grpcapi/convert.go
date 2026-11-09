@@ -208,6 +208,15 @@ func rejectEtag(etag string) error {
 	return nil
 }
 
+// rejectAnnotations refuses annotations, which this service does not store yet,
+// instead of dropping them.
+func rejectAnnotations(annotations map[string]string) error {
+	if len(annotations) != 0 {
+		return invalidSpec("annotations are not supported")
+	}
+	return nil
+}
+
 func maskPaths(mask *fieldmaskpb.FieldMask) []string {
 	if mask == nil || len(mask.GetPaths()) == 0 {
 		return []string{"spec", "labels"}
