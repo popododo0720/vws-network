@@ -404,15 +404,15 @@ func toStatus(err error, requestID string) error {
 	}
 	var de *domain.Error
 	if !errors.As(err, &de) {
-		return status.Error(codes.Internal, "internal error")
+		return withInfo(codes.Internal, "internal error", "RECONCILIATION_FAILED")
 	}
 	code, reason := statusInfo(de, requestID)
-	if reason == "" {
-		return status.Error(code, de.Msg)
-	}
 	return withInfo(code, de.Msg, reason)
 }
 
+// statusInfo gives every kind its own ErrorInfo reason. vws-lib errs.GRPCStatus
+// fills a missing one from the gRPC code alone, which reads Aborted as
+// IDEMPOTENCY_CONFLICT, so a status must never leave here without one.
 func statusInfo(de *domain.Error, requestID string) (codes.Code, string) {
 	switch de.Kind {
 	case domain.Invalid:
@@ -440,7 +440,8 @@ func statusInfo(de *domain.Error, requestID string) (codes.Code, string) {
 		if de.Msg == domain.MsgEtagMismatch {
 			return codes.Aborted, "ETAG_MISMATCH"
 		}
-		return codes.Aborted, ""
+		// A concurrent writer moved the project: retryable, not a reused request id.
+		return codes.Aborted, "GENERATION_CONFLICT"
 	case domain.Forbidden:
 		return codes.PermissionDenied, "PERMISSION_DENIED"
 	default:

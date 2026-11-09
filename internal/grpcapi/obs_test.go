@@ -2,6 +2,8 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -199,6 +201,50 @@ func TestAuditedMethods(t *testing.T) {
 	for m, want := range map[string]bool{"CreateVpc": true, "DeleteSubnet": true, "AuthorizeSecurityGroupIngress": true, "GetVpc": false, "ListOperations": false} {
 		if isMutating(m) != want {
 			t.Errorf("isMutating(%s) = %v, want %v", m, !want, want)
+		}
+	}
+}
+
+// TestWireStatusKeepsHandlerReason runs each toStatus result through
+// errs.GRPCStatus, the conversion grpcobs applies to every handler error. The
+// code, message and ErrorInfo reason the handler chose reach the client
+// unchanged; only a status without a reason (a context error) gets the one
+// vws-lib fills in.
+func TestWireStatusKeepsHandlerReason(t *testing.T) {
+	type tc struct {
+		name, reqID string
+		err         error
+		code        codes.Code
+		reason      string
+	}
+	busy := func(msg string) error { return &domain.Error{Kind: domain.Busy, Msg: msg} }
+	reused := &domain.Error{Kind: domain.Conflict, Msg: "idempotency key reused with a different request"}
+	cases := []tc{
+		{"concurrent write", "", busy("project changed concurrently"), codes.Aborted, "GENERATION_CONFLICT"},
+		{"stale etag", "", busy(domain.MsgEtagMismatch), codes.Aborted, "ETAG_MISMATCH"},
+		{"reused request id", "r-1", reused, codes.Aborted, "IDEMPOTENCY_CONFLICT"},
+		{"unknown error", "", errors.New("sqlite: secret"), codes.Internal, "RECONCILIATION_FAILED"},
+		{"plain internal", "", status.Error(codes.Internal, "internal error"), codes.Internal, "RECONCILIATION_FAILED"},
+		{"canceled", "", context.Canceled, codes.Canceled, "RECONCILIATION_FAILED"},
+		{"deadline", "", context.DeadlineExceeded, codes.DeadlineExceeded, "RECONCILIATION_FAILED"},
+	}
+	for k := domain.Invalid; k <= domain.Forbidden; k++ {
+		code, reason := statusInfo(&domain.Error{Kind: k, Msg: "x"}, "")
+		cases = append(cases, tc{fmt.Sprintf("kind %d", k), "", &domain.Error{Kind: k, Msg: "x"}, code, reason})
+	}
+	for _, c := range cases {
+		handler := status.Convert(toStatus(c.err, c.reqID))
+		wire := errs.GRPCStatus(handler.Err())
+		var infos []*errdetails.ErrorInfo
+		for _, d := range wire.Details() {
+			if info, ok := d.(*errdetails.ErrorInfo); ok {
+				infos = append(infos, info)
+			}
+		}
+		if wire.Code() != c.code || wire.Message() != handler.Message() || len(infos) != 1 ||
+			infos[0].GetReason() != c.reason || infos[0].GetDomain() != "vws.dev" {
+			t.Errorf("%s: wire %v %q %v, want %v %q reason %s",
+				c.name, wire.Code(), wire.Message(), infos, c.code, handler.Message(), c.reason)
 		}
 	}
 }

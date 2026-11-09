@@ -37,21 +37,21 @@ When an operation is `SUCCEEDED`, the fake dataplane matches that resource's des
 
 The API is `github.com/popododo0720/vws-proto` at a release tag (`go.mod` pins it; today `v0.5.0`). The repo is public, so `go mod download` fetches it through the default module proxy with no token or `GOPRIVATE`. To take a new proto release, run `go get github.com/popododo0720/vws-proto@vX.Y.Z` and `go mod tidy`. Never copy or `replace` the module.
 
-`third_party/vws-lib` is commit `d361c4a` of `github.com/popododo0720/vws-lib` (main after the English-only PR; same Go code as `v0.2.0` `fe9cd29`). It was copied with `scripts/vendor-lib.sh vendor <commit>` and is used through a replace. CI checks with `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check` that the copy has not changed. Do not edit the copy.
+`third_party/vws-lib` is tag `v0.3.0` (`91242ce`) of `github.com/popododo0720/vws-lib`. It was copied with `scripts/vendor-lib.sh vendor v0.3.0` and is used through a replace. CI checks with `VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check` that the copy has not changed. Do not edit the copy.
 
 ## Observability
 
-`main` calls `obs.Setup` once and shuts it down at exit. Logs are slog JSON. Metrics are `vws.rpc.server.*`, `vws.reconcile.total` and `vws.reconcile.duration` (dataplane ensure calls, `controller`=`network.<kind>`, `result`=`ok`, `conflict` or `error`), `vws.audit.events` (mutating RPCs), `vws.panics`, `vws.errors`, `vws.queue.depth` (`queue`=`network.operations`, the number of unfinished operations) and `vws.build.info`. Metrics are exported over OTLP; there is no `/metrics` pull endpoint (vws-lib has no Prometheus reader yet). Labels never carry resource ids or request ids.
+`main` calls `obs.Setup` once and shuts it down at exit. Logs are slog JSON. Metrics are `vws.rpc.server.*`, `vws.reconcile.total` and `vws.reconcile.duration` (dataplane ensure calls, `controller`=`network.<kind>`, `result`=`ok`, `conflict` or `error`), `vws.audit.events` (mutating RPCs), `vws.panics`, `vws.errors`, `vws.queue.depth` (`queue`=`network.operations`, the number of unfinished operations) and `vws.build.info`. Metrics are exported over OTLP. `/metrics` is off by default; `OTEL_METRICS_EXPORTER=prometheus` serves them instead in Prometheus text form on `/metrics` at `VWS_HEALTH_ADDR` (only `vws_*` series, for example `vws_rpc_server_requests_total` and `vws_queue_depth`), and start fails when `VWS_HEALTH_ADDR` is empty. Labels never carry resource ids or request ids.
 
 Environment variables this service reads:
 
 | Variable | Meaning |
 | --- | --- |
-| `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SDK_DISABLED` | Standard OpenTelemetry settings. With `OTEL_EXPORTER_OTLP_ENDPOINT` empty, nothing is exported. |
+| `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SDK_DISABLED` | Standard OpenTelemetry settings. With `OTEL_EXPORTER_OTLP_ENDPOINT` empty, nothing is exported. `OTEL_METRICS_EXPORTER` is `otlp` (default), `prometheus` (serve `/metrics`) or `none`. |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`, `SENTRY_SAMPLE_RATE` | Sends to Sentry only when `SENTRY_DSN` is set. |
 | `VWS_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`. |
 | `VWS_LOG_FORMAT` | `json` (default) or `text`. |
-| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`. Empty means not opened. `/readyz` calls `(*Service).Ready` and fails after SIGTERM. |
+| `VWS_HEALTH_ADDR` | Address for `/healthz` and `/readyz`, and `/metrics` with `OTEL_METRICS_EXPORTER=prometheus`. Empty means not opened. `/readyz` calls `(*Service).Ready` and fails after SIGTERM. |
 
 gRPC health is described in `docs/health.md`.
 
