@@ -404,3 +404,70 @@ func TestSQLiteCurrentRefusesOldSchema(t *testing.T) {
 		t.Fatalf("user_version %d err %v, want 1", version, err)
 	}
 }
+
+type importCrash struct {
+	client.Client
+	remaining int
+}
+
+func (c *importCrash) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if c.remaining == 0 {
+		return errInjected
+	}
+	c.remaining--
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func (c *importCrash) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if c.remaining == 0 {
+		return errInjected
+	}
+	c.remaining--
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+func TestImportRestartsAtEveryWrite(t *testing.T) {
+	baseline, _ := openFixtureCopy(t)
+	counter := &importCrash{Client: fake.NewClientBuilder().Build(), remaining: 1 << 30}
+	if _, err := runImport(t, baseline, openKubeRepo(t, counter, "vws-system"), ImportWrite); err != nil {
+		t.Fatal(err)
+	}
+	writes := (1 << 30) - counter.remaining
+	if writes == 0 {
+		t.Fatal("fixture import made no writes")
+	}
+	t.Logf("interrupting all %d destination writes", writes)
+	for cut := 0; cut <= writes; cut++ {
+		t.Run(fmt.Sprint(cut), func(t *testing.T) {
+			ctx := context.Background()
+			src, path := openFixtureCopy(t)
+			base := fake.NewClientBuilder().Build()
+			broken := openKubeRepo(t, &importCrash{Client: base, remaining: cut}, "vws-system")
+			_, interrupted := runImport(t, src, broken, ImportWrite)
+			if cut < writes && !errors.Is(interrupted, errInjected) {
+				t.Fatalf("expected interruption after %d writes: %v", cut, interrupted)
+			}
+			if cut == writes && interrupted != nil {
+				t.Fatalf("complete import: %v", interrupted)
+			}
+			closeOrFail(t, src.close)
+			reopened, err := openSQLite(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { closeOrFail(t, reopened.close) })
+			restarted := openKubeRepo(t, base, "vws-system")
+			if report, err := runImport(t, reopened, restarted, ImportWrite); err != nil {
+				t.Fatalf("restart: %v\n%s", err, report)
+			}
+			if report, err := runImport(t, reopened, restarted, ImportVerify); err != nil {
+				t.Fatalf("restart lost or duplicated records: %v\n%s", err, report)
+			}
+			report, err := runImport(t, reopened, restarted, ImportWrite)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantLine(t, report, "differences: 0, missing: 0, writes: 0")
+		})
+	}
+}

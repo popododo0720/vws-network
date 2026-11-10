@@ -67,6 +67,19 @@ A new change copies the nearest example. Resource rules live only in the `State`
 | The Kube-OVN Subnet of a VPC subnet gets `-vm-mtu` (default 9001; outside 68–9001 it is Invalid at start) as `spec.mtu`, `enableDHCP: true` and `dhcpV4Options: lease_time=3600,mtu=<mtu>`. The chart passes the value from VWSCluster `spec.network.vmMTU`; vws-network does not compute it. The flag name lives only in `flagVMMTU`. The 1500 external path is in `docs/mtu.md`. | `CheckVMMTU`, `(*kubeOVN).subnetSpec`, `flagVMMTU`, `TestCheckVMMTU`, `TestOutOfRangeVMMTUFailsAtStart`, `TestSubnetSpecCarriesTheVMMTU`, `TestEnvtestSubnetMTU` |
 | The repo is English only (see "English only"). Hangul is allowed only in files `.github/english-allowlist` lists with a reason. | `scripts/check-english.sh files` (CI `english` job) |
 
+## SQLite import lifecycle
+
+Import runs only as the separate `vws-network import-sqlite` command.
+`cmd/vws-network/main.go:main` dispatches the command to `importMain` and exits
+before parsing the server flags, opening the service, or calling `srv.Serve`.
+`cmd/vws-network/import.go:importMain` calls `network.ImportSQLite` directly.
+Stop every service using the source SQLite file and destination namespace
+before running it. The command does not yet enforce this operator precondition.
+
+`TestImportRestartsAtEveryWrite` interrupts destination writes, reopens the
+SQLite source and Kubernetes repository, then verifies all records and a no-op
+re-run. This covers partial change sets and restarts between completed writes. A persistent import-complete or service-start guard remains separate work.
+
 ## English only
 
 Write everything in this repo in English: README, code comments, docs, AGENTS.md, QUALITY.md, PR and issue templates, commit messages, PR and issue bodies, review comments and `Verified-by` sections. The `english` job in CI runs `scripts/check-english.sh`: `files` fails on a tracked file with Hangul unless `.github/english-allowlist` lists it as `<glob> <reason>` (only test data and user-facing UI strings belong there), and `text` and `commits` reject Hangul in the PR body and the PR's commit messages with no exception.
