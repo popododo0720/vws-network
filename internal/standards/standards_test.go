@@ -194,3 +194,26 @@ func TestNoBrandNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRaceDetectorEnabled(t *testing.T) {
+	for file, commands := range map[string][]string{
+		".github/workflows/ci.yml": {
+			"CGO_ENABLED: \"1\"", "go test -race ./...",
+			"go test -race -tags envtest -count=1 ./internal/network",
+		},
+		"Makefile": {
+			"CGO_ENABLED=1 go test -race ./...",
+			"CGO_ENABLED=1 go test -race -tags envtest -count=1 ./internal/network",
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range commands {
+			if !strings.Contains(string(data), command) {
+				t.Errorf("%s must run tests with the race detector: missing %q", file, command)
+			}
+		}
+	}
+}

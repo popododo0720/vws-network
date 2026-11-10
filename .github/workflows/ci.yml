@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      CGO_ENABLED: "0"
+      CGO_ENABLED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,14 +20,15 @@ jobs:
       - name: vendored vws-lib
         run: VWS_LIB_OFFLINE=1 scripts/vendor-lib.sh check
       - name: test
-        run: go test ./...
+        run: go test -race ./...
       - name: envtest
         env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
-          export KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
-          go test -tags envtest -count=1 ./internal/network
+          KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
+          export KUBEBUILDER_ASSETS
+          go test -race -tags envtest -count=1 ./internal/network
 
   # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).
   # fetch-depth 0 gives new-from-merge-base the origin/main history it compares against.
