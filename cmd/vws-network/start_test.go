@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -77,5 +78,19 @@ func TestSplitList(t *testing.T) {
 	}
 	if got := splitList(""); got != nil {
 		t.Fatalf("%q", got)
+	}
+}
+
+func TestCheckWorkersFlag(t *testing.T) {
+	for _, ok := range []int{1, 2, 64} {
+		if err := checkWorkersFlag(ok); err != nil {
+			t.Fatalf("%d: %v", ok, err)
+		}
+	}
+	for _, bad := range []int{-1, 0, 65} {
+		err := checkWorkersFlag(bad)
+		if err == nil || !strings.Contains(err.Error(), "-workers: workers "+strconv.Itoa(bad)+" is outside 1..64") {
+			t.Fatalf("%d: %v", bad, err)
+		}
 	}
 }

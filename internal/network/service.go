@@ -25,14 +25,31 @@ import (
 // The store is one SQLite file at DatabasePath or ConfigMaps in
 // Store.Namespace; exactly one is set. Many replicas may share the Kubernetes
 // store; only the holder of its Lease runs the workers. AddressPool is a
-// canonical IPv4 prefix from /16 through /30. Workers 0 starts two workers. A
-// zero KubeOVN keeps the in-process fake dataplane.
+// canonical IPv4 prefix from /16 through /30. Workers 0 starts DefaultWorkers;
+// otherwise it is 1..MaxWorkers. A zero KubeOVN keeps the in-process fake
+// dataplane.
 type Config struct {
 	DatabasePath string
 	Store        StoreConfig
 	AddressPool  netip.Prefix
 	Workers      int
 	KubeOVN      KubeOVNConfig
+}
+
+// DefaultWorkers and MaxWorkers bound the operation worker pool. One leader
+// runs every worker, and each claims jobs through the store, so more than
+// MaxWorkers only adds contention on the store.
+const (
+	DefaultWorkers = 2
+	MaxWorkers     = 64
+)
+
+// CheckWorkers rejects a worker count outside 1..MaxWorkers.
+func CheckWorkers(n int) error {
+	if n < 1 || n > MaxWorkers {
+		return &domain.Error{Kind: domain.Invalid, Msg: fmt.Sprintf("workers %d is outside 1..%d", n, MaxWorkers)}
+	}
+	return nil
 }
 
 // Service is the network control surface. Storage and the dataplane are
@@ -72,6 +89,13 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := validatePool(cfg.AddressPool); err != nil {
 		return nil, err
 	}
+	workers := cfg.Workers
+	if workers == 0 {
+		workers = DefaultWorkers
+	}
+	if err := CheckWorkers(workers); err != nil {
+		return nil, err
+	}
 	if err := checkStore(cfg); err != nil {
 		return nil, err
 	}
@@ -93,10 +117,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	repo, el, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, err
-	}
-	workers := cfg.Workers
-	if workers == 0 {
-		workers = 2
 	}
 	svc, err := build(repo, measured{dp}, cfg.AddressPool, workers)
 	if err == nil {

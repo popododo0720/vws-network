@@ -14,7 +14,7 @@ const usage = "usage: vws-network (-db PATH | -store-namespace NS) -pool CIDR [-
 	"[-kube-external-subnet NAME [-kube-nad-namespace NS] [-kube-snat] " +
 	"[-kube-provider-network NAME -kube-underlay-interface NIC [-kube-underlay-vlan ID] " +
 	"-kube-underlay-cidr CIDR -kube-underlay-gateway IP [-kube-underlay-exclude A[..B],...]] " +
-	"[-kube-direct-networks JSON -kube-direct-nad-namespace NS]]"
+	"[-kube-direct-networks JSON -kube-direct-nad-namespace NS]] [-workers N]"
 
 // parseStart checks the required flags before anything opens. Exactly one
 // of -db and -store-namespace picks the store. -pool has no default: the
@@ -99,6 +99,16 @@ func parseDirect(line string) ([]network.DirectNetwork, error) {
 		return nil, errors.New("-kube-direct-networks: trailing data after the json array")
 	}
 	return out, nil
+}
+
+// checkWorkersFlag refuses a -workers value outside 1..network.MaxWorkers.
+// network.Open reads 0 as the default, so the flag check is the one that
+// refuses an explicit 0.
+func checkWorkersFlag(n int) error {
+	if err := network.CheckWorkers(n); err != nil {
+		return fmt.Errorf("-workers: %w", err)
+	}
+	return nil
 }
 
 // splitList reads a comma-separated flag, dropping blanks.
