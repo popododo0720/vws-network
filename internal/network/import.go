@@ -32,10 +32,14 @@ var ErrImportDiffers = errors.New("network: the kubernetes store differs from th
 
 // ImportSQLite copies the projects, operations, idempotency keys and pool
 // addresses of the SQLite file from into the Kubernetes store, and prints one
-// line per object to out. Run it while no service uses either store: it holds
-// no Lease. A write run migrates a file of an older schema in place first, as
-// a start on it would; a dry run or verify refuses one instead.
+// line per object to out. Stop all source services first. A persistent marker
+// excludes destination services until import completes; subsequent writes are
+// no-ops. A write run migrates an older schema in place first; read-only modes
+// refuse one instead.
 func ImportSQLite(ctx context.Context, from string, store StoreConfig, mode ImportMode, out io.Writer) error {
+	if mode < ImportWrite || mode > ImportVerify {
+		return &domain.Error{Kind: domain.Invalid, Msg: "invalid import mode"}
+	}
 	if from == "" {
 		return &domain.Error{Kind: domain.Invalid, Msg: "the sqlite file is required"}
 	}
@@ -49,6 +53,16 @@ func ImportSQLite(ctx context.Context, from string, store StoreConfig, mode Impo
 	if err != nil {
 		return err
 	}
+	dst := &kubeRepo{c: c, ns: store.Namespace, now: time.Now}
+	if mode == ImportWrite {
+		done, err := importFinished(ctx, dst)
+		if err != nil {
+			return err
+		}
+		if done {
+			return reportImported(out)
+		}
+	}
 	if mode != ImportWrite {
 		if err := sqliteCurrent(ctx, from); err != nil {
 			return err
@@ -57,12 +71,6 @@ func ImportSQLite(ctx context.Context, from string, store StoreConfig, mode Impo
 	src, err := openSQLite(ctx, from)
 	if err != nil {
 		return err
-	}
-	dst := &kubeRepo{c: c, ns: store.Namespace, now: time.Now}
-	if mode == ImportWrite {
-		if dst, err = newKubeRepo(ctx, c, store.Namespace); err != nil {
-			return errors.Join(err, src.close())
-		}
 	}
 	return errors.Join(importStore(ctx, src, dst, mode, out), src.close())
 }
@@ -388,6 +396,39 @@ func sameJob(a, b job) bool {
 }
 
 func importStore(ctx context.Context, src *sqliteRepo, dst *kubeRepo, mode ImportMode, out io.Writer) error {
+	if mode != ImportWrite {
+		return copyImport(ctx, src, dst, mode, out)
+	}
+	done, err := importFinished(ctx, dst)
+	if err != nil {
+		return err
+	}
+	if done {
+		return reportImported(out)
+	}
+	digest, err := importSource(ctx, src)
+	if err != nil {
+		return err
+	}
+	done, err = admitLifecycle(ctx, dst, lifecycleImporting, digest)
+	if err != nil {
+		return err
+	}
+	if done {
+		return reportImported(out)
+	}
+	// Admission precedes repair, which can finish partially written changes.
+	repaired, err := newKubeRepo(ctx, dst.c, dst.ns)
+	if err != nil {
+		return err
+	}
+	if err := copyImport(ctx, src, repaired, mode, out); err != nil {
+		return err
+	}
+	return completeImport(ctx, dst, digest)
+}
+
+func copyImport(ctx context.Context, src *sqliteRepo, dst *kubeRepo, mode ImportMode, out io.Writer) error {
 	view, unsettled, err := readStore(ctx, dst)
 	if err != nil {
 		return err

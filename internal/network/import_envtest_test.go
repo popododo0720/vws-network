@@ -5,11 +5,14 @@ package network
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/popododo0720/vws-network/internal/domain"
 )
 
 // TestEnvtestImportSQLiteFixture runs the import of the released fixture
@@ -75,5 +78,74 @@ func TestEnvtestImportSQLiteFixture(t *testing.T) {
 	}
 	if steps, diffs, err := resourcePlan(upgradeFixtureProject, want, got); err != nil || len(steps)+len(diffs) > 0 {
 		t.Fatalf("documents differ: %d missing, %v, err %v", len(steps), diffs, err)
+	}
+}
+
+func TestEnvtestImportLifecycle(t *testing.T) {
+	env, admin := startEnv(t)
+	ctx := context.Background()
+	store := StoreConfig{Namespace: envNamespace, Kubeconfig: kubeconfigFor(t, env)}
+	src, path := openFixtureCopy(t)
+	dst := &kubeRepo{c: admin, ns: envNamespace}
+	digest, err := importSource(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admitLifecycle(ctx, dst, lifecycleImporting, digest); err != nil {
+		t.Fatal(err)
+	}
+	before := storeObjects(t, admin)
+	if _, _, err := openStore(ctx, Config{Store: store}); kind(err) != domain.Conflict {
+		t.Fatalf("service entered unfinished import = %v", err)
+	}
+	if after := storeObjects(t, admin); !reflect.DeepEqual(before, after) {
+		t.Fatal("blocked service repaired or changed the store")
+	}
+	if err := ImportSQLite(ctx, path, store, ImportWrite, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSQLite(ctx, path, store, ImportVerify, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := openStore(ctx, Config{Store: store}); err != nil {
+		t.Fatalf("service after import = %v", err)
+	}
+	if _, err := src.db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	before = storeObjects(t, admin)
+	if err := ImportSQLite(ctx, path, store, ImportWrite, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if after := storeObjects(t, admin); !reflect.DeepEqual(before, after) {
+		t.Fatal("completed import wrote destination records")
+	}
+	var version int
+	if err := src.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("no-op migrated source: %d, %v", version, err)
+	}
+}
+
+func TestEnvtestImportRefusesServedStore(t *testing.T) {
+	env, admin := startEnv(t)
+	ctx := context.Background()
+	store := StoreConfig{Namespace: envNamespace, Kubeconfig: kubeconfigFor(t, env)}
+	if _, _, err := openStore(ctx, Config{Store: store}); err != nil {
+		t.Fatal(err)
+	}
+	src, path := openFixtureCopy(t)
+	if _, err := src.db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	before := storeObjects(t, admin)
+	if err := ImportSQLite(ctx, path, store, ImportWrite, io.Discard); kind(err) != domain.Conflict {
+		t.Fatalf("import after service start = %v", err)
+	}
+	if after := storeObjects(t, admin); !reflect.DeepEqual(before, after) {
+		t.Fatal("refused import wrote destination records")
+	}
+	var version int
+	if err := src.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("refused import migrated source: %d, %v", version, err)
 	}
 }

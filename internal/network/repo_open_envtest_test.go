@@ -210,6 +210,7 @@ func TestEnvtestStoreReplayLeavesOneObject(t *testing.T) {
 		}
 	}
 	want := map[string]int{
+		"lifecycle":              1,
 		storeHead:                1,
 		storeKey:                 1,
 		storeOp:                  1,

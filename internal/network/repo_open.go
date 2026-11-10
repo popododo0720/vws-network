@@ -53,6 +53,9 @@ func openStore(ctx context.Context, cfg Config) (repository, elector, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if _, err := admitLifecycle(ctx, &kubeRepo{c: c, ns: cfg.Store.Namespace}, lifecycleServing, ""); err != nil {
+		return nil, nil, err
+	}
 	el, err := leaseElector(ctx, rest.CopyConfig(rc), cfg.Store.Namespace, cfg.Store.lease)
 	if err != nil {
 		return nil, nil, fmt.Errorf("openStore: %w", err)
